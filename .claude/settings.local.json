@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(timeout 60 python:*)",
+      "Bash(timeout 120 python:*)",
+      "Bash(ulimit:*)",
+      "Bash(cat:*)",
+      "Bash(timeout 600 python:*)",
+      "Bash(find:*)",
+      "Bash(kernprof:*)",
+      "Bash(lscpu:*)",
+      "Bash(wget:*)",
+      "Bash(chmod:*)",
+      "Bash(./FastTree)",
+      "Bash(export OMP_NUM_THREADS=16)",
+      "Bash(./FastTree:*)",
+      "Bash(pkill:*)",
+      "Bash(tee:*)",
+      "Bash(kill:*)",
+      "Bash(truncate:*)",
+      "Bash(ps:*)",
+      "Bash(python3:*)",
+      "Bash(export:*)",
+      "Bash(readlink:*)",
+      "Bash(ls:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

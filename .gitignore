@@ -1,0 +1,139 @@
+# ============================================
+# Python 项目 .gitignore
+# ============================================
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# 分发 / 打包
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# 虚拟环境
+venv/
+ENV/
+env/
+.venv
+
+# IDE 和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# 测试和覆盖率
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ============================================
+# 项目特定文件
+# ============================================
+
+# 数据文件（通常很大）
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# 模型文件（通常很大，应使用 Git LFS 或单独存储）
+*.pth
+*.pt
+# model/ ← 已移除，需要提交模型权重给用户使用
+
+# 序列和树文件
+*.phy
+*.fasta
+*.fa
+*.nex
+*.nexus
+*.trees
+
+# 结果和数据目录
+result/
+result_temp/
+data/
+downloads/
+branch_length_indices/
+quartet_analysis_results/
+test_cpp/
+
+# 第三方工具（应该通过脚本安装，不要提交到仓库）
+INDELibleV1.03/
+SimPhy_1.0.2/
+raxml-ng_v1.2.2_linux_x86_64/
+wQFM-2020-master/
+
+# C++ 编译产物
+*.o
+*.obj
+*.dll
+*.exe
+*.out
+*.app
+cpp_source/build/
+
+# 临时文件
+*.tmp
+*.temp
+*.log
+*.bak
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 大型 JSON 数据文件
+mlp_sample_accuracy_data.json
+mlp_vs_quartformer_comparison.json
+quartformer_sample_accuracy_data.json
+revbayes_tree.json
+
+# 图表文件
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.svg
+
+
+# 测试结果和临时文件
+output/
+temp/
+test_cpp/
