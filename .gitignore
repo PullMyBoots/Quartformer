@@ -132,8 +132,17 @@ revbayes_tree.json
 *.pdf
 *.svg
 
+# Keep documentation figures tracked
+!docs/**/*.png
+!docs/**/*.jpg
+!docs/**/*.jpeg
+
 
 # 测试结果和临时文件
 output/
 temp/
 test_cpp/
+
+# Local/private or heavy vendor directories not for publishing
+software/
+.claude/
