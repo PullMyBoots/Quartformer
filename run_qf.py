@@ -55,7 +55,7 @@ sp, pattern_freq_cuda = _load_cpp_extensions()
 def run_qf(
     phy_path,
     output_tree_path,
-    task_type="heterogeneous",
+    task_type="homogeneous",
     k_param=3.0,
     cleanup_temp_files: bool = True,
     run_mode: str = "regular",
@@ -76,8 +76,8 @@ def run_qf(
         phy_path: Input alignment file path (PHY format)
         output_tree_path: Output tree path (file or directory)
         task_type: Task type
-            - "homogeneous": Homogeneous mode, assumes all partitions consistent
-            - "heterogeneous": Heterogeneous mode, accounts for gene flow/conflicts (default)
+            - "homogeneous": Homogeneous mode, assumes all partitions consistent (default)
+            - "heterogeneous": Heterogeneous mode, accounts for gene flow/conflicts
         k_param: Block design parameter (default: 3.0)
         cleanup_temp_files: Whether to clean up temporary files (default: True)
         run_mode: Assembly algorithm
@@ -676,7 +676,7 @@ Examples:
     parser.add_argument(
         "--task-type",
         choices=["homogeneous", "heterogeneous"],
-        default="heterogeneous",
+        default="homogeneous",
         help="Task type: homogeneous (single tree) or heterogeneous (multi-partition conflicts)"
     )
 
