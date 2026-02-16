@@ -10,6 +10,8 @@ import subprocess
 import argparse
 import itertools
 import importlib.util
+import os
+import tempfile
 from pathlib import Path
 from collections import defaultdict
 import numpy as np
@@ -397,19 +399,28 @@ def run_qf(
     input_file = result_dir / f"qfm_input_{output_tree_path.stem}.txt"
     output_file = result_dir / f"qfm_output_{output_tree_path.stem}.txt"
 
-    _write_quartet_file(
-        split_keys_unique,
-        split_weight_sums,
-        taxon_labels,
-        input_file,
-        selected_assembler
-    )
+    if selected_assembler == "tree-qmc":
+        assembled = _run_tree_qmc_with_ram_temp(
+            split_keys=split_keys_unique,
+            split_weights=split_weight_sums,
+            taxon_labels=taxon_labels,
+            output_file=output_file,
+        )
+    else:
+        _write_quartet_file(
+            split_keys_unique,
+            split_weight_sums,
+            taxon_labels,
+            input_file,
+            selected_assembler,
+        )
+        assembled = _run_quartet_assembler(
+            input_file,
+            output_file,
+            selected_assembler,
+        )
 
-    if not _run_quartet_assembler(
-        input_file,
-        output_file,
-        selected_assembler,
-    ):
+    if not assembled:
         print("[ERROR] Initial assembly failed")
         return ""
 
@@ -642,6 +653,44 @@ def _write_quartet_file(split_keys, split_weights, taxon_labels, output_file, se
                     for a, b, c, d, w in zip(p1a, p1b, p2a, p2b, weights_chunk)
                 )
             f.write(chunk_text)
+
+
+def _preferred_temp_dir() -> Path:
+    """Prefer RAM-backed temp dirs for large temporary quartet files."""
+    for p in (Path("/dev/shm"), Path("/tmp")):
+        if p.exists() and p.is_dir():
+            return p
+    return Path(tempfile.gettempdir())
+
+
+def _run_tree_qmc_with_ram_temp(split_keys, split_weights, taxon_labels, output_file) -> bool:
+    """
+    Run TREE-QMC using a temporary quartet input file on RAM-backed filesystem.
+
+    This avoids heavy write/read overhead on mounted disks like `/mnt/c` while
+    remaining compatible with TREE-QMC's file-based parser.
+    """
+    temp_dir = _preferred_temp_dir()
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_path_str = tempfile.mkstemp(prefix="qf_quartets_", suffix=".txt", dir=str(temp_dir))
+    os.close(fd)
+    tmp_path = Path(tmp_path_str)
+    try:
+        _write_quartet_file(
+            split_keys=split_keys,
+            split_weights=split_weights,
+            taxon_labels=taxon_labels,
+            output_file=tmp_path,
+            selected_assembler="tree-qmc",
+        )
+        return _run_quartet_assembler(
+            input_file=tmp_path,
+            output_file=output_file,
+            selected_assembler="tree-qmc",
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 ###################################################################################################

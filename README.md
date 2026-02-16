@@ -142,8 +142,7 @@ QuartFormer2 uses a two-stage approach:
 
 ```
 publish_code/
-├── run_qf.py              # Main inference script
-├── run_qf2.py             # Alternative inference script (memory-optimized)
+├── run_qf.py              # Main inference script (includes RAM-temp I/O optimization)
 ├── model.py               # Neural network model definitions
 ├── utils.py               # Utility functions
 ├── sparse_attn_kernel.py  # CUDA attention kernels
