@@ -75,6 +75,9 @@ htmlcov/
 *.pth
 *.pt
 # model/ ← 已移除，需要提交模型权重给用户使用
+!model/**/*.pt
+!model/**/*.pth
+!model/**/*.pkl
 
 # 序列和树文件
 *.phy
