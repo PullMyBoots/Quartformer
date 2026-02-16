@@ -83,3 +83,23 @@ QuartFormer currently requires CUDA tensors during inference. CPU-only environme
 
 The current release does **not** explicitly model insertion/deletion (indel) signal from gap characters (`-`).  
 Gap characters are used as alignment placeholders, but indel events are not treated as an independent phylogenetic signal source in the current model.
+
+## Experimental Status and Usage Scope
+
+QuartFormer is an **experimental** deep learning-based tree inference method.  
+In this release, accuracy claims are primarily supported by simulated-data evaluations (see `docs/accuracy.md`).
+
+For real biological datasets, there is currently no complete theoretical guarantee that inferred topologies are always reliable.  
+Use QuartFormer as an auxiliary inference tool, not as the sole basis for high-stakes decisions that may cause financial, clinical, legal, or other material losses.
+
+## Acknowledgments
+
+This project builds on publicly available tools and datasets. We thank the authors and maintainers of:
+
+- IQ-TREE: https://github.com/iqtree/iqtree2
+- RAxMLGrove: https://github.com/angtft/RAxMLGrove
+- SimPhy: https://github.com/adamallo/SimPhy
+- FastTree: https://github.com/morgannprice/fasttree
+- ASTER: https://github.com/chaoszhang/ASTER
+
+Please also cite the corresponding papers when using these tools and datasets in academic work.
