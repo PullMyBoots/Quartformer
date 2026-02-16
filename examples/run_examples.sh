@@ -20,6 +20,11 @@ echo ""
 echo "3. Running large dataset (96 species) with quartet accuracy evaluation..."
 python ../run_qf.py --phy 96/MSA.phy --out output_large.nwk --ref-tree 96/tree.nwk --metric quartet
 
+# Real dataset (Wolbachia) - With RF evaluation
+echo ""
+echo "4. Running real dataset (Wolbachia) with RF distance evaluation..."
+python ../run_qf.py --phy Wolbachia/MSA.phy --out output_wolbachia.nwk --ref-tree Wolbachia/ref_tree.newick --metric rf
+
 echo ""
 echo "=========================================="
 echo "All examples completed!"
