@@ -1,172 +1,94 @@
-# Accuracy Benchmarks on Simulated Datasets
+# Accuracy Evaluation
 
-This document presents comprehensive accuracy evaluation of QuartFormer on simulated phylogenetic datasets, comparing against state-of-the-art methods including ASTER, FastTree, and IQ-TREE.
+This document summarizes the current accuracy evaluation protocol and reported results for QuartFormer.
 
-## Test Environment
+## Inference Modes
 
-### Simulation Parameters
-- **Simulation Software**: SimPhy / RAXML-NG
-- **Evolutionary Model**: GTR (General Time Reversible)
-- **Tree Generation**: Yule process / birth-death process
-- **Sequence Lengths**: 100k, 1M, 10M sites
-- **Taxon Counts**: 24, 48, 96, 192 species
-- **Replicates**: X replicates per configuration
-- **Missing Data**: [Optional: rate of missing data]
+QuartFormer provides two inference modes in `run_qf.py`:
 
-### Evaluation Metrics
-- **Robinson-Foulds (RF) Distance**: Normalized RF distance (0-1, lower is better)
-- **Quartet Distance**: Quartet concordance (0-1, higher is better)
-- **Branch Score Distance (BSD)**: [Optional]
+- `--task-type homogeneous`: sequence evolution is modeled as consistent with a single species-tree history.
+- `--task-type heterogeneous`: sequence evolution may be discordant with the species tree (for example, due to ILS, HGT, gene duplication, and gene loss).
 
----
+These two modes use different model weights trained on different simulation settings.
 
-## Accuracy Results
+## Evaluation Metrics
 
-### 100k Sequence Length
+Both simulated and real-data analyses use:
 
-| Taxa | QuartFormer | ASTER | FastTree | IQ-TREE |
-|------|-------------|-------|----------|---------|
-| 24   | TBD         | TBD   | TBD      | TBD     |
-| 48   | TBD         | TBD   | TBD      | TBD     |
-| 96   | TBD         | TBD   | TBD      | TBD     |
-| 192  | TBD         | TBD   | TBD      | TBD     |
+1. **RF distance** between inferred tree and reference species tree (lower is better).
+2. **Quartet concordance** between inferred tree and reference species tree (higher is better).
 
-### 1M Sequence Length
+## Modeling Scope Note
 
-| Taxa | QuartFormer | ASTER | FastTree | IQ-TREE |
-|------|-------------|-------|----------|---------|
-| 24   | TBD         | TBD   | TBD      | TBD     |
-| 48   | TBD         | TBD   | TBD      | TBD     |
-| 96   | TBD         | TBD   | TBD      | TBD     |
-| 192  | TBD         | TBD   | TBD      | TBD     |
+In the current release, QuartFormer does not explicitly model insertion/deletion (indel) events carried by gap characters (`-`) as a separate signal.  
+Therefore, results should be interpreted as evaluations under the current substitution-pattern-focused modeling setup.
 
-### 10M Sequence Length
+## Simulated Data Benchmarks
 
-| Taxa | QuartFormer | ASTER | FastTree | IQ-TREE |
-|------|-------------|-------|----------|---------|
-| 24   | TBD         | TBD   | TBD      | TBD     |
-| 48   | TBD         | TBD   | TBD      | TBD     |
-| 96   | TBD         | TBD   | TBD      | TBD     |
-| 192  | TBD         | TBD   | TBD      | TBD     |
+We report three simulation experiments.
 
----
+### Experiment A: Homogeneous setting
 
-## Analysis by Taxon Count
+- Comparison: QuartFormer vs IQ-TREE
+- Data source:
+  - Topology/branch and empirical parameters from [RAxMLGrove](https://github.com/angtft/RAxMLGrove)
+  - MSA simulated with IQ-TREE `alisim`
+- Target: compare inferred trees against the simulation reference species tree.
 
-### Small Datasets (24 taxa)
+![Homogeneous Comparison](simulation_result/1.png)
 
-[Description of accuracy patterns, advantages/disadvantages]
+| Metric | QuartFormer | IQ-TREE |
+|---|---:|---:|
+| Mean RF distance | 0.262 | 0.234 |
+| Mean quartet concordance | 0.936 | 0.942 |
 
-### Medium Datasets (48-96 taxa)
+### Experiment B: Heterogeneous setting (ILS only)
 
-[Description of accuracy patterns, advantages/disadvantages]
+- Comparison: QuartFormer vs FastTree vs Caster
+- Data source:
+  - Species trees and gene trees simulated with [SimPhy](https://github.com/adamallo/SimPhy)
+  - Sequence evolution parameters from RAxMLGrove
+  - Gene alignments concatenated into a supermatrix for inference
+- Inconsistency modeled: ILS.
 
-### Large Datasets (192+ taxa)
+![ILS Comparison](simulation_result/2.png)
 
-[Description of accuracy patterns, advantages/disadvantages]
+| Metric | QuartFormer | FastTree | Caster |
+|---|---:|---:|---:|
+| Mean RF distance | 0.075 | 0.076 | 0.082 |
+| Mean quartet concordance | 0.977 | 0.965 | 0.968 |
 
----
+### Experiment C: Heterogeneous setting (ILS + additional events)
 
-## Analysis by Sequence Length
+- Comparison: QuartFormer vs FastTree vs Caster
+- Data generation uses heterogeneous settings with additional processes such as HGT, gene duplication, and gene loss.
+- Sequence evolution parameters are sampled from RAxMLGrove.
+- Gene alignments are concatenated into a supermatrix for inference.
 
-### Short Alignments (100k sites)
+![Complex Heterogeneity Comparison](simulation_result/3.png)
 
-[Discussion of accuracy with limited sequence data]
+| Metric | QuartFormer | FastTree | Caster |
+|---|---:|---:|---:|
+| Mean RF distance | 0.101 | 0.093 | 0.119 |
+| Mean quartet concordance | 0.963 | 0.955 | 0.946 |
 
-### Medium Alignments (1M sites)
+## Real-World Dataset Validation
 
-[Discussion of accuracy with moderate sequence data]
+We also evaluate QuartFormer on published real datasets by concatenating available genes into one supermatrix (missing taxa padded with `-`) and then inferring one tree.
 
-### Long Alignments (10M sites)
+Real-data inferred trees are intended for **reference and qualitative comparison only**. Different preprocessing pipelines, filtering strategies, and model assumptions can produce different topologies.
 
-[Discussion of accuracy with extensive sequence data]
+Figures for real-data results are provided in:
 
----
+- `docs/realistic_result` (Figure 1 to Figure 8)
 
-## Comparison with Competing Methods
+Included datasets:
 
-### vs ASTER
-
-[Accuracy comparison, strengths and weaknesses]
-
-### vs FastTree
-
-[Accuracy comparison, strengths and weaknesses]
-
-### vs IQ-TREE
-
-[Accuracy comparison, strengths and weaknesses]
-
----
-
-## Key Findings
-
-1. **Overall Accuracy**: [Summary statement]
-
-2. **Scalability**: [How accuracy scales with taxa/sequence length]
-
-3. **Competitive Performance**: [Compared to other methods]
-
-4. **Best Use Cases**: [When QuartFormer performs best]
-
----
-
-## Accuracy vs Speed Trade-off
-
-[Combined analysis of accuracy benchmarks.md with speed results]
-
-### Performance-Accuracy Pareto Front
-
-[Visualization or table showing which method offers best balance]
-
----
-
-## Statistical Significance
-
-[Optional: Statistical tests comparing methods]
-
----
-
-## Conclusion
-
-[Summary of accuracy performance and recommendations]
-
-
-
------
-
-
-下面我们从一些研究文献中提取数据，然后使用他们的数据集，将他们提供的所有的基因串联拼接起来，缺失物种的直接补充“-”，成为一个超级矩阵，然后给我们的模型进行推断。上面我们对比了他们文献所给出的参考数据和我们推断的结果，并且注意，推断结果仅供参考，就是推断结果，他注意参考一下就行了吧。也就是说，因为不同的推断方法以及不同的数据处理的方式，可能会对推断结果造成很大的出入。
-
-数据集一：
-Phylogenomic Analysis of Wolbachia Strains Reveals Patterns of Genome Evolution and Recombination
-
-
-
-数据集二：Insecta
-Phylogenomics of the major lineages of Bembidion and related ground beetles (Coleoptera: Carabidae: Bembidiini)
-
-
-数据集三：Oakleaf butterfly dataset
-《The evolution and diversification of oakleaf butterflies.》
-
-
-数据集四：plant1
-《Highly resolved papilionoid legume phylogeny based on plastid phylogenomics》
-
-
-数据集五：fish
-Phylogenomic Systematics of Ostariophysan Fishes: Ultraconserved Elements Support the Surprising Non-Monophyly of Characiformes
-
-
-数据集六：
-哺乳动物1：82
-Genomic evidence reveals a radiation of placental mammals uninterrupted by the KPg boundary
-
-数据集七：
-哺乳动物2：
-Ultraconserved elements improve the resolution of difficult nodes within the rapid radiation of neotropical sigmodontine rodents
-
-
-数据集八：反刍
-Large-scale ruminant genome sequencing provides insights into their evolution and distinct traits
+1. Wolbachia: *Phylogenomic Analysis of Wolbachia Strains Reveals Patterns of Genome Evolution and Recombination*
+2. Insecta (Bembidion): *Phylogenomics of the major lineages of Bembidion and related ground beetles*
+3. Oakleaf butterfly: *The evolution and diversification of oakleaf butterflies*
+4. Plant (papilionoid legumes): *Highly resolved papilionoid legume phylogeny based on plastid phylogenomics*
+5. Fish (Ostariophysan): *Phylogenomic Systematics of Ostariophysan Fishes*
+6. Mammal dataset 1: *Genomic evidence reveals a radiation of placental mammals uninterrupted by the KPg boundary*
+7. Mammal dataset 2: *Ultraconserved elements improve the resolution of difficult nodes within the rapid radiation of neotropical sigmodontine rodents*
+8. Ruminant: *Large-scale ruminant genome sequencing provides insights into their evolution and distinct traits*

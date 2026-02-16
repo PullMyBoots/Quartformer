@@ -1,6 +1,6 @@
 # Performance Benchmarks
 
-This document presents comprehensive performance benchmarks comparing QuartFormer (QF) against ASTER and FastTree across various sequence lengths and taxon counts.
+This document reports runtime benchmarks for QuartFormer compared with ASTER and FastTree under a fixed local environment.
 
 ## Test Environment
 
@@ -12,7 +12,7 @@ This document presents comprehensive performance benchmarks comparing QuartForme
 
 ### Software Configuration
 - **Python**: 3.10.18
-- **CUDA**: 12.6 
+- **CUDA**: 12.6
 - **PyTorch**: Enabled with CUDA support
 - **Compiler**: GCC with C++17 support
 
@@ -45,13 +45,20 @@ FastTree -nt -gtr input.fasta > output.nwk
 - **Model**: GTR (General Time Reversible)
 - **Sequence lengths**: 100k, 1M, 10M sites
 - **Taxon counts**: 24, 48, 96, 192 species
-- **Replicates**: 1 per configuration
+- **Replicates**: 1 per configuration (single-run measurement)
 - **Thread count**: 32 (for multi-threaded tools)
 
 ### Performance Metrics
 - **Metric**: Wall-clock time (seconds)
 - **Measurement**: Unix `/usr/bin/time -v` for precise timing
 - **Speedup calculation**: (competitor_time / qf_time)
+
+## Scope and Interpretation
+
+- Results are specific to this hardware/software stack and command settings.
+- No variance estimates are provided because each configuration was measured once.
+- `N/A` indicates the corresponding method did not finish within the practical run window used in our experiments.
+- These benchmarks focus on runtime only; accuracy is reported separately in `docs/accuracy.md`.
 
 ---
 
@@ -66,10 +73,8 @@ FastTree -nt -gtr input.fasta > output.nwk
 | 96   | 5.380   | 60.080    | 130.550      | **11.17x**   | **24.27x**     |
 | 192  | 49.569  | 91.850    | 218.480      | **1.85x**    | **4.41x**      |
 
-**Key Observations:**
-- QF achieves 3-11x speedup over ASTER for 24-96 taxa
-- QF achieves 25-36x speedup over FastTree for 24-96 taxa
-- For 192 taxa, QF is 1.85x faster than ASTER and 4.41x faster than FastTree
+**Observation (100k):**
+- In this setup, QuartFormer is faster than ASTER and FastTree for all listed taxon counts.
 
 ---
 
@@ -82,11 +87,8 @@ FastTree -nt -gtr input.fasta > output.nwk
 | 96   | 6.793   | 206.170   | 1946.760     | **30.35x**   | **286.52x**    |
 | 192  | 53.284  | 707.800   | 3840.000     | **13.29x**   | **72.09x**     |
 
-**Key Observations:**
-- QF achieves 9-38x speedup over ASTER
-- QF achieves 72-620x speedup over FastTree
-- Most dramatic improvement over FastTree at 24 taxa (619x faster)
-- Consistent superior performance across all taxon counts
+**Observation (1M):**
+- In this setup, QuartFormer remains faster than ASTER and FastTree for all listed taxon counts.
 
 ---
 
@@ -99,66 +101,18 @@ FastTree -nt -gtr input.fasta > output.nwk
 | 96   | 23.012  | 6387.000  | N/A          | **277.61x**  | N/A            |
 | 192  | 165.497 | N/A       | N/A          | N/A          | N/A            |
 
-**Key Observations:**
-- QF demonstrates exceptional performance on large-scale datasets
-- **94-278x speedup** over ASTER for 24-96 taxa
-- **2,694-6,152x speedup** over FastTree for 24-48 taxa
-- QF successfully processes datasets where other tools fail or timeout
+**Observation (10M):**
+- Runtime gaps increase in this dataset group, and some baseline runs are reported as `N/A`.
 
 
 ---
 
-## Key Findings
+## Summary
 
-### Overall Performance
+Under this benchmark configuration, QuartFormer shows lower wall-clock runtime than ASTER and FastTree across all completed comparisons in the tables above.  
+Observed speedup ranges are:
 
-1. **QF significantly outperforms both ASTER and FastTree** across all tested configurations
-2. **Speedup over ASTER**: 1.85x to 277.61x
-3. **Speedup over FastTree**: 4.41x to 6151.99x
+- vs ASTER: **1.85x to 277.61x**
+- vs FastTree: **4.41x to 6151.99x**
 
-### Scalability
-
-1. **Excellent performance on large-scale datasets**
-   - QF handles 10M sequence lengths efficiently
-   - Other methods (ASTER, FastTree) struggle or fail completely
-   - Maximum speedup achieved at 10M sequence length
-
-2. **Consistent improvements across taxon counts**
-   - Performance advantage increases with sequence length
-   - Maintains efficiency from 24 to 192 taxa
-
-### Practical Implications
-
-- **Small datasets (24-96 taxa, 100k-1M sequences)**: QF completes in seconds
-- **Medium datasets (96-192 taxa, 1M sequences)**: QF completes in under a minute
-- **Large datasets (96 taxa, 10M sequences)**: QF completes in ~23 seconds, while ASTER takes ~1.8 hours
-- **Very large datasets (192 taxa, 10M sequences)**: Only QF can complete the analysis in reasonable time (~2.75 minutes)
-
----
-
-## Visualization Highlights
-
-### Most Dramatic Speedups
-
-1. **QF vs FastTree (24 taxa, 10M sequences)**: 6,151x faster
-   - QF: 1.5 seconds
-   - FastTree: 2.5 hours
-
-2. **QF vs ASTER (96 taxa, 10M sequences)**: 278x faster
-   - QF: 23 seconds
-   - ASTER: 1.8 hours
-
-3. **QF vs FastTree (48 taxa, 1M sequences)**: 509x faster
-   - QF: 1.8 seconds
-   - FastTree: 15 minutes
-
----
-
-## Conclusion
-
-QuartFormer demonstrates substantial performance advantages over existing phylogenetic inference methods, particularly for:
-- **Large-scale datasets** (10M+ sequences)
-- **Deep phylogenies** (192+ taxa)
-- **Time-critical applications** requiring rapid tree inference
-
-The combination of deep learning models, GPU acceleration, and optimized algorithms enables QF to achieve 1-2 orders of magnitude speedup while maintaining or improving accuracy.
+These values should be interpreted as environment-specific benchmark results rather than universal performance guarantees.
