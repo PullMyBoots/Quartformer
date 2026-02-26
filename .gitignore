@@ -144,6 +144,7 @@ revbayes_tree.json
 # 测试结果和临时文件
 output/
 temp/
+/temp/
 test_cpp/
 
 # Local/private or heavy vendor directories not for publishing
