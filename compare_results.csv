@@ -1,0 +1,17 @@
+version,species,dna_len,task_type,k_param,run_mode,time_s,rf_distance,rf_accuracy,quartet_distance,quartet_accuracy,output_tree,status
+run_qf.py (原始版),24,100000,homogeneous,3.0,regular,3.161,0.047619,0.952381,0.010540,0.989460,output/compare_original_tree_24_100000_regular.nwk,SUCCESS
+run_qf_copy.py (修改版),24,100000,homogeneous,3.0,regular,2.461,0.047619,0.952381,0.010540,0.989460,output/compare_copy_tree_24_100000_regular.nwk,SUCCESS
+run_qf.py (原始版),24,1000000,homogeneous,3.0,regular,2.949,0.619048,0.380952,0.411914,0.588086,output/compare_original_tree_24_1000000_regular.nwk,SUCCESS
+run_qf_copy.py (修改版),24,1000000,homogeneous,3.0,regular,2.987,0.619048,0.380952,0.387164,0.612836,output/compare_copy_tree_24_1000000_regular.nwk,SUCCESS
+run_qf.py (原始版),48,100000,homogeneous,3.0,regular,12.282,0.000000,1.000000,0.000000,1.000000,output/compare_original_tree_48_100000_regular.nwk,SUCCESS
+run_qf_copy.py (修改版),48,100000,homogeneous,3.0,regular,11.829,0.000000,1.000000,0.000000,1.000000,output/compare_copy_tree_48_100000_regular.nwk,SUCCESS
+run_qf.py (原始版),48,1000000,homogeneous,3.0,regular,12.615,0.000000,1.000000,0.000000,1.000000,output/compare_original_tree_48_1000000_regular.nwk,SUCCESS
+run_qf_copy.py (修改版),48,1000000,homogeneous,3.0,regular,12.692,0.000000,1.000000,0.000000,1.000000,output/compare_copy_tree_48_1000000_regular.nwk,SUCCESS
+run_qf.py (原始版),96,100000,homogeneous,3.0,regular,25.411,0.043011,0.956989,0.002400,0.997600,output/compare_original_tree_96_100000_regular.nwk,SUCCESS
+run_qf_copy.py (修改版),96,100000,homogeneous,3.0,regular,24.978,0.043011,0.956989,0.002100,0.997900,output/compare_copy_tree_96_100000_regular.nwk,SUCCESS
+run_qf.py (原始版),96,1000000,homogeneous,3.0,regular,29.019,0.086022,0.913978,0.004025,0.995975,output/compare_original_tree_96_1000000_regular.nwk,SUCCESS
+run_qf_copy.py (修改版),96,1000000,homogeneous,3.0,regular,29.534,0.086022,0.913978,0.003550,0.996450,output/compare_copy_tree_96_1000000_regular.nwk,SUCCESS
+run_qf.py (原始版),192,100000,homogeneous,3.0,regular,152.777,0.461957,0.538043,0.191225,0.808775,output/compare_original_tree_192_100000_regular.nwk,SUCCESS
+run_qf_copy.py (修改版),192,100000,homogeneous,3.0,regular,152.054,0.467391,0.532609,0.185000,0.815000,output/compare_copy_tree_192_100000_regular.nwk,SUCCESS
+run_qf.py (原始版),192,1000000,homogeneous,3.0,regular,122.477,0.262873,0.737127,0.107075,0.892925,output/compare_original_tree_192_1000000_regular.nwk,SUCCESS
+run_qf_copy.py (修改版),192,1000000,homogeneous,3.0,regular,122.411,0.268293,0.731707,0.107400,0.892600,output/compare_copy_tree_192_1000000_regular.nwk,SUCCESS

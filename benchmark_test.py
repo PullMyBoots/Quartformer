@@ -175,19 +175,19 @@ if __name__ == "__main__":
     # ==================== 配置参数（在此修改）====================
 
     # 要测试的物种数列表
-    SPECIES_LIST = [512]
+    SPECIES_LIST = [24, 48, 96, 192, 256, 512]
 
     # 要测试的DNA长度列表
-    DNA_LEN_LIST = [100000]
+    DNA_LEN_LIST = [100000, 1000000, 10000000]
 
     # 运行模式: "fast" (只保留top1) 或 "regular" (保留全部拓扑)
-    RUN_MODE = "fast"
+    RUN_MODE = "regular"
 
     # 任务类型: "heterogeneous" 或 "homogeneous"
     TASK_TYPE = "homogeneous"
 
     # k参数（用于block采样）
-    K_PARAM = 3
+    K_PARAM = 2.8
 
     # 推断批次大小
     INFER_BATCH_SIZE = 32
