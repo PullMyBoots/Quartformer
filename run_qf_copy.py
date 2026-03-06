@@ -218,6 +218,14 @@ def run_qf(
     attn_model = attn_model.to(device).eval()
     seq_cuda = torch.from_numpy(seq_tensor).to(device)
 
+    # Filter out columns where all values are the same (no variation)
+    # This reduces computation by removing conserved sites
+    col_max = seq_cuda.max(dim=0)[0]
+    col_min = seq_cuda.min(dim=0)[0]
+    variant_mask = col_max != col_min  # True for columns with variation
+    seq_cuda = seq_cuda[:, variant_mask]
+    print(f"Filtered seq_cuda shape: {seq_cuda.shape} (removed {variant_mask.numel() - variant_mask.sum()} constant columns)")
+
     local_quartet_template = np.asarray(
         list(itertools.combinations(range(model_size), 4)), dtype=np.int32
     )
