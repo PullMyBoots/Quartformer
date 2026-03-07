@@ -175,10 +175,10 @@ if __name__ == "__main__":
     # ==================== 配置参数（在此修改）====================
 
     # 要测试的物种数列表
-    SPECIES_LIST = [512]
+    SPECIES_LIST = [24, 48, 96, 192, 320, 512]
 
     # 要测试的DNA长度列表
-    DNA_LEN_LIST = [100000, 1000000, 10000000]
+    DNA_LEN_LIST = [10000000, 1000000, 100000]
 
     # 运行模式: "fast" (只保留top1) 或 "regular" (保留全部拓扑)
     RUN_MODE = "regular"
@@ -210,3 +210,82 @@ if __name__ == "__main__":
         cleanup=CLEANUP,
         output_csv=OUTPUT_CSV
     )
+    # ==================== 配置参数（在此修改）====================
+
+    # 要测试的物种数列表
+    SPECIES_LIST = [24, 48, 96, 192, 320, 512]
+
+    # 要测试的DNA长度列表
+    DNA_LEN_LIST = [10000000, 1000000, 100000]
+
+    # 运行模式: "fast" (只保留top1) 或 "regular" (保留全部拓扑)
+    RUN_MODE = "fast"
+
+    # 任务类型: "heterogeneous" 或 "homogeneous"
+    TASK_TYPE = "homogeneous"
+
+    # k参数（用于block采样）
+    K_PARAM = 3
+
+    # 推断批次大小
+    INFER_BATCH_SIZE = 32
+
+    # 是否清理临时文件
+    CLEANUP = True
+
+    # 结果输出路径
+    OUTPUT_CSV = "benchmark_results.csv"
+
+    # ===========================================================
+
+    run_benchmark(
+        species_list=SPECIES_LIST,
+        dna_len_list=DNA_LEN_LIST,
+        task_type=TASK_TYPE,
+        k_param=K_PARAM,
+        run_mode=RUN_MODE,
+        infer_batch_size=INFER_BATCH_SIZE,
+        cleanup=CLEANUP,
+        output_csv=OUTPUT_CSV
+    )
+
+    # ==================== 配置参数（在此修改）====================
+
+    # 要测试的物种数列表
+    SPECIES_LIST = [24, 48, 96, 192, 320, 512]
+
+    # 要测试的DNA长度列表
+    DNA_LEN_LIST = [10000000, 1000000, 100000]
+
+    # 运行模式: "fast" (只保留top1) 或 "regular" (保留全部拓扑)
+    RUN_MODE = "regular"
+
+    # 任务类型: "heterogeneous" 或 "homogeneous"
+    TASK_TYPE = "homogeneous"
+
+    # k参数（用于block采样）
+    K_PARAM = 2.8
+
+    # 推断批次大小
+    INFER_BATCH_SIZE = 32
+
+    # 是否清理临时文件
+    CLEANUP = True
+
+    # 结果输出路径
+    OUTPUT_CSV = "benchmark_results.csv"
+
+    # ===========================================================
+
+    run_benchmark(
+        species_list=SPECIES_LIST,
+        dna_len_list=DNA_LEN_LIST,
+        task_type=TASK_TYPE,
+        k_param=K_PARAM,
+        run_mode=RUN_MODE,
+        infer_batch_size=INFER_BATCH_SIZE,
+        cleanup=CLEANUP,
+        output_csv=OUTPUT_CSV
+    )
+
+    
