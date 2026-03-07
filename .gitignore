@@ -146,6 +146,7 @@ output/
 temp/
 /temp/
 test_cpp/
+benchmark_results.csv
 
 # Local/private or heavy vendor directories not for publishing
 software/
