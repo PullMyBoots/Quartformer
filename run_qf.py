@@ -82,9 +82,10 @@ def run_qf(
             - "heterogeneous": Heterogeneous mode, accounts for gene flow/conflicts
         k_param: Block design parameter (default: 3.0)
         cleanup_temp_files: Whether to clean up temporary files (default: True)
-        run_mode: Assembly algorithm
-            - "fast": Always use TREE-QMC
-            - "regular": Use QFM-FI for <=96 species, TREE-QMC for >96
+        run_mode: Quartet weight mode
+            - "fast": Only keep top-1 topology weights per quartet (faster, slightly less accurate)
+            - "regular": Keep all topology weights (slower, more accurate)
+            Note: Assembler selection is independent: QFM-FI for <=96 species, TREE-QMC for >96
         infer_batch_size: Batch size for inference (default: 32)
         ref_tree_path: Reference tree path for evaluation (optional)
         metric: Evaluation metric when ref_tree_path is provided
@@ -131,7 +132,7 @@ def run_qf(
     # ================================================================================
     # Load Input Data
     # ================================================================================
-    seq_tensor, species_names = sp.load_phy_to_tensor(str(phy_path))
+    seq_tensor, species_names = sp.load_phy_to_tensor(str(phy_path), drop_conserved_sites=True)
     num_species = seq_tensor.shape[0]
 
     if num_species < 24:
@@ -139,12 +140,13 @@ def run_qf(
     if num_species >= 65536:
         raise ValueError("Current implementation requires species count < 65536")
 
-    # Select quartet assembler based on run mode
+    # Normalize run mode
     run_mode_key = run_mode.strip().lower().replace("_", "-")
     if run_mode_key not in ("fast", "regular"):
         raise ValueError("run_mode must be 'fast' or 'regular'")
 
-    selected_assembler = "tree-qmc" if run_mode_key == "fast" else ("qfm-fi" if num_species <= 96 else "tree-qmc")
+    # 统一组装器选择策略（不受 run_mode 影响）
+    selected_assembler = "qfm-fi" if num_species <= 96 else "tree-qmc"
     print(f"[INFO] run_mode={run_mode_key}, assembler={selected_assembler}, species={num_species}")
 
     # Taxon label conversion
@@ -215,6 +217,14 @@ def run_qf(
     attn_model.load_state_dict(torch.load(model_dir / "qf1.pt", map_location="cpu", weights_only=False))
     attn_model = attn_model.to(device).eval()
     seq_cuda = torch.from_numpy(seq_tensor).to(device)
+
+    # Filter out columns where all values are the same (no variation)
+    # This reduces computation by removing conserved sites
+    col_max = seq_cuda.max(dim=0)[0]
+    col_min = seq_cuda.min(dim=0)[0]
+    variant_mask = col_max != col_min  # True for columns with variation
+    seq_cuda = seq_cuda[:, variant_mask]
+    print(f"Filtered seq_cuda shape: {seq_cuda.shape} (removed {variant_mask.numel() - variant_mask.sum()} constant columns)")
 
     local_quartet_template = np.asarray(
         list(itertools.combinations(range(model_size), 4)), dtype=np.int32
@@ -303,10 +313,33 @@ def run_qf(
         species_batch = species_enc.unsqueeze(0).expand(actual_bs, -1, -1)
         input_batch = torch.cat([species_batch, pattern_batch], dim=2)
 
+        # Padding到固定长度（如10640），在末尾补0
+        target_len = 10640  # 目标长度，可根据需要调整
+        current_len = 10626
+        pad_len = 14
+
+       
+        input_batch_padded = torch.cat(
+            [input_batch, input_batch.new_zeros((actual_bs, pad_len, input_batch.size(2)))],
+            dim=1,
+        )
+    
+
         with torch.no_grad():
-            logits = attn_model(input_batch, coeff_blocks, quartet_matrix)
+            logits = attn_model(input_batch_padded, coeff_blocks, quartet_matrix)
+            # 截取回有效长度
+            logits = logits[:, :current_len, :]
             probs = torch.softmax(logits, dim=-1)
-            weights_batch = (probs * 100.0).cpu().numpy()
+
+            # fast模式只保留top1拓扑权重，regular模式保留所有拓扑权重
+            if run_mode_key == "fast":
+                top1_weights = torch.zeros_like(probs)
+                top_indices = torch.argmax(probs, dim=-1, keepdim=True)
+                top_values = torch.gather(probs, dim=-1, index=top_indices)
+                top1_weights.scatter_(dim=-1, index=top_indices, src=top_values)
+                weights_batch = (top1_weights * 100.0).cpu().numpy()
+            else:
+                weights_batch = (probs * 100.0).cpu().numpy()
 
         # Aggregate results
         quartets_flat = np.concatenate(batch_quartets_np, axis=0)
@@ -734,7 +767,7 @@ Examples:
         "--run-mode",
         choices=["fast", "regular"],
         default="regular",
-        help="Run mode: fast (always TREE-QMC) or regular (QFM-FI for <=96, TREE-QMC for >96)"
+        help="Quartet weight mode: fast (top-1 only) or regular (all topologies). Assembler: QFM-FI for <=96 species, TREE-QMC for >96"
     )
 
     # Reference tree evaluation

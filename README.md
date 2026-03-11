@@ -1,19 +1,36 @@
 # QuartFormer
 
-Deep learning phylogenetic inference for long alignments and medium-to-large taxon sets, designed for fast runtime.
+Deep learning phylogenetic inference for sequence alignments with fast runtime, especially on very long alignments.
 
 ## What This Project Is
 
 QuartFormer infers species trees from concatenated supermatrix alignments in **PHYLIP (`.phy`)** format.  
-It targets genome-scale datasets where sequence length is large (for example 1M to 10M sites) and taxon count is moderate to high.
+It can be applied to both short and long sequence alignments, and provides particularly strong runtime advantages on very long alignments with moderate to high taxon counts.
 Current version supports inference tasks with **at least 24 taxa** (`num_species >= 24`).
 
 ## Key Features
 
-- Fast inference on long-sequence datasets using GPU-accelerated quartet scoring.
+- Fast inference across a wide range of sequence lengths using GPU-accelerated quartet scoring.
+- Particularly strong runtime advantages on very long sequence alignments.
 - Accuracy has been evaluated with **RF distance** and **quartet concordance**; see `docs/accuracy.md` for details.
 - Bundled assembly backends and model weights for reproducible release packaging.
 - Example datasets included in `examples/` for quick verification.
+
+## Performance Comparison
+
+QuartFormer (K=3) inference time compared with other quartet-based methods. **Mbp** = Megabase pairs (million base pairs).
+
+| Taxa | Seq Length | QuartFormer | vs ASTER | vs FastTree |
+|------|------------|-------------|----------|-------------|
+| 24 | 1 Mbp | **~0.5s** | 8x | 660x |
+| 24 | 10 Mbp | **~1.5s** | 21x | 5000x |
+| 96 | 1 Mbp | **~5.3s** | 42x | 350x |
+| 96 | 10 Mbp | **~19s** | 190x | 2000x |
+| 320 | 1 Mbp | **~142s** | 12x | 46x |
+| 320 | 10 Mbp | **~330s** | 62x | N/A |
+| 512 | 10 Mbp | **~1567s** | 17x | N/A |
+
+**QuartFormer is 4-200x faster than ASTER and 46-5000x faster than FastTree** on long sequence alignments.
 
 ## Official Tested Environment
 
@@ -101,5 +118,7 @@ This project builds on publicly available tools and datasets. We thank the autho
 - SimPhy: https://github.com/adamallo/SimPhy
 - FastTree: https://github.com/morgannprice/fasttree
 - ASTER: https://github.com/chaoszhang/ASTER
+- QFM-Java: https://github.com/sharmin-mim/qfm_java
+- TREE-QMC: https://github.com/molloy-lab/TREE-QMC
 
 Please also cite the corresponding papers when using these tools and datasets in academic work.

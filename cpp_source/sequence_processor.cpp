@@ -121,10 +121,40 @@ public:
 
     py::array_t<float> compute_pattern_frequencies(
         const std::vector<std::tuple<std::string, std::string, std::string, std::string>>& species_tuples,
-        bool include_gap) {
+        bool include_gap,
+        bool exclude_constant_sites = false,
+        bool drop_conserved_sites = false) {
 
         int num_tuples = species_tuples.size();
         int num_patterns = include_gap ? 625 : 256;  // 4^4 = 256, 5^4 = 625
+        std::vector<int> kept_positions;
+        kept_positions.reserve(static_cast<size_t>(sequence_length_));
+
+        if (drop_conserved_sites) {
+            std::vector<const std::string*> all_sequences;
+            all_sequences.reserve(sequences_.size());
+            for (const auto& pair : sequences_) {
+                all_sequences.push_back(&pair.second);
+            }
+
+            for (int pos = 0; pos < sequence_length_; ++pos) {
+                char first_char = (*(all_sequences[0]))[pos];
+                bool all_same = true;
+                for (size_t seq_idx = 1; seq_idx < all_sequences.size(); ++seq_idx) {
+                    if ((*(all_sequences[seq_idx]))[pos] != first_char) {
+                        all_same = false;
+                        break;
+                    }
+                }
+                if (!all_same) {
+                    kept_positions.push_back(pos);
+                }
+            }
+        } else {
+            for (int pos = 0; pos < sequence_length_; ++pos) {
+                kept_positions.push_back(pos);
+            }
+        }
 
         // 创建numpy数组
         auto result = py::array_t<float>({num_tuples, num_patterns});
@@ -151,7 +181,7 @@ public:
             std::vector<int> pattern_counts(num_patterns, 0);
             int valid_sites = 0;
 
-            for (int pos = 0; pos < sequence_length_; ++pos) {
+            for (int pos : kept_positions) {
                 char chars[4] = {seq1[pos], seq2[pos], seq3[pos], seq4[pos]};
                 std::string pattern(chars, chars + 4);
 
@@ -167,6 +197,13 @@ public:
                     if (has_invalid_char) {
                         continue;  // 跳过包含gap或模糊字符的列
                     }
+                }
+
+                if (exclude_constant_sites &&
+                    chars[0] == chars[1] &&
+                    chars[1] == chars[2] &&
+                    chars[2] == chars[3]) {
+                    continue;
                 }
 
                 int index = pattern_to_index(pattern, include_gap);
@@ -240,7 +277,7 @@ long long parse_species_index(const std::string& s) {
 }  // namespace
 
 // 新增：直接把 phy 转成 int8 张量（A,C,G,T,- => 0,1,2,3,4），返回 (tensor, species_names)
-py::tuple load_phy_to_tensor(const std::string& phy_path) {
+py::tuple load_phy_to_tensor(const std::string& phy_path, bool drop_conserved_sites = false) {
     std::ifstream file(phy_path, std::ios::binary);
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open file: " + phy_path);
@@ -371,6 +408,44 @@ py::tuple load_phy_to_tensor(const std::string& phy_path) {
         }
     }
 
+    if (drop_conserved_sites) {
+        std::vector<int> keep_positions;
+        keep_positions.reserve(static_cast<size_t>(sequence_length));
+
+        for (int pos = 0; pos < sequence_length; ++pos) {
+            int8_t first_val = buffer[static_cast<size_t>(pos)];
+            bool all_same = true;
+            for (int row = 1; row < n_species; ++row) {
+                if (buffer[static_cast<size_t>(row) * static_cast<size_t>(sequence_length) + static_cast<size_t>(pos)] != first_val) {
+                    all_same = false;
+                    break;
+                }
+            }
+            if (!all_same) {
+                keep_positions.push_back(pos);
+            }
+        }
+
+        const int filtered_sequence_length = static_cast<int>(keep_positions.size());
+        std::vector<int8_t> filtered_buffer(
+            static_cast<size_t>(n_species) * static_cast<size_t>(filtered_sequence_length)
+        );
+
+        for (int row = 0; row < n_species; ++row) {
+            for (int new_pos = 0; new_pos < filtered_sequence_length; ++new_pos) {
+                filtered_buffer[
+                    static_cast<size_t>(row) * static_cast<size_t>(filtered_sequence_length) + static_cast<size_t>(new_pos)
+                ] = buffer[
+                    static_cast<size_t>(row) * static_cast<size_t>(sequence_length) +
+                    static_cast<size_t>(keep_positions[static_cast<size_t>(new_pos)])
+                ];
+            }
+        }
+
+        buffer = std::move(filtered_buffer);
+        sequence_length = filtered_sequence_length;
+    }
+
     auto* raw_buffer = new std::vector<int8_t>(std::move(buffer));
     py::capsule capsule(raw_buffer, [](void* v) {
         delete reinterpret_cast<std::vector<int8_t>*>(v);
@@ -378,7 +453,7 @@ py::tuple load_phy_to_tensor(const std::string& phy_path) {
 
     auto tensor = py::array_t<int8_t>(
         {n_species, sequence_length},
-        {static_cast<py::ssize_t>(sequence_length), static_cast<py::ssize_t>(1)},
+        {static_cast<py::ssize_t>(std::max(sequence_length, 1)), static_cast<py::ssize_t>(1)},
         raw_buffer->data(),
         capsule
     );
@@ -441,27 +516,46 @@ py::object compute_quartet_indices(const py::object& pkl_or_obj, bool as_torch =
 py::array_t<float> process_phy_file(
     const std::string& phy_path,
     const std::vector<std::tuple<std::string, std::string, std::string, std::string>>& species_tuples,
-    bool include_gap = false
+    bool include_gap = false,
+    bool exclude_constant_sites = false,
+    bool drop_conserved_sites = false
 ) {
     SequenceProcessor processor;
     if (!processor.load_phy_file(phy_path)) {
         throw std::runtime_error("Failed to load phy file: " + phy_path);
     }
-    return processor.compute_pattern_frequencies(species_tuples, include_gap);
+    return processor.compute_pattern_frequencies(
+        species_tuples, include_gap, exclude_constant_sites, drop_conserved_sites
+    );
 }
 
 PYBIND11_MODULE(sequence_processor, m) {
     py::class_<SequenceProcessor>(m, "SequenceProcessor")
         .def(py::init<>())
         .def("load_phy_file", &SequenceProcessor::load_phy_file)
-        .def("compute_pattern_frequencies", &SequenceProcessor::compute_pattern_frequencies, py::return_value_policy::copy)
+        .def(
+            "compute_pattern_frequencies",
+            &SequenceProcessor::compute_pattern_frequencies,
+            py::arg("species_tuples"),
+            py::arg("include_gap"),
+            py::arg("exclude_constant_sites") = false,
+            py::arg("drop_conserved_sites") = false,
+            py::return_value_policy::copy
+        )
         .def("get_sequence_length", &SequenceProcessor::get_sequence_length)
         .def("get_species_names", &SequenceProcessor::get_species_names);
 
     // 新增：直接暴露的全局函数
-    m.def("process_phy_file", &process_phy_file, py::arg("phy_path"), py::arg("species_tuples"), py::arg("include_gap") = false,
+    m.def(
+        "process_phy_file",
+        &process_phy_file,
+        py::arg("phy_path"),
+        py::arg("species_tuples"),
+        py::arg("include_gap") = false,
+        py::arg("exclude_constant_sites") = false,
+        py::arg("drop_conserved_sites") = false,
         "直接处理phy文件并返回模式频率张量（无需类封装）");
-    m.def("load_phy_to_tensor", &load_phy_to_tensor, py::arg("phy_path"),
+    m.def("load_phy_to_tensor", &load_phy_to_tensor, py::arg("phy_path"), py::arg("drop_conserved_sites") = false,
         "Load PHY file and return (sequences_tensor, species_names) tuple");
     m.def("compute_quartet_indices", &compute_quartet_indices, py::arg("pkl_or_obj"), py::arg("as_torch") = true,
         "Compute quartet indices from a pickle path/bytes/object; returns torch.int64 Tensor by default");
