@@ -25,29 +25,70 @@ from utils import _canonical_split_from_class, find_polytomy_representative_leav
 # C++ Extension Loading
 ###################################################################################################
 
-def _load_cpp_extensions():
+_BACKEND_SPECS = {
+    "original": {
+        "sequence_name": "sequence_processor",
+        "sequence_path": "cpp_source/sequence_processor.cpython-310-x86_64-linux-gnu.so",
+        "pattern_name": "pattern_freq_cuda",
+        "pattern_path": "cpp_source/cuda13_pattern_freq/pattern_freq_cuda.cpython-310-x86_64-linux-gnu.so",
+    },
+    "v3": {
+        "sequence_name": "sequence_processor_v3",
+        "sequence_path": "cpp_source/sequence_processor_v3.cpython-310-x86_64-linux-gnu.so",
+        "pattern_name": "pattern_freq_cuda_v3",
+        "pattern_path": "cpp_source/cuda13_pattern_freq/pattern_freq_cuda_v3.cpython-310-x86_64-linux-gnu.so",
+    },
+}
+_EXTENSION_CACHE = {}
+
+
+def _load_shared_object(module_name: str, module_path: str):
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Failed to load extension spec for {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_cpp_extensions(sequence_backend: str):
     """Load C++ extension modules for sequence processing and CUDA acceleration."""
-    # Load sequence processor
-    spec = importlib.util.spec_from_file_location(
-        "sequence_processor",
-        "cpp_source/sequence_processor.cpython-310-x86_64-linux-gnu.so"
+    backend_key = sequence_backend.strip().lower()
+    if backend_key not in _BACKEND_SPECS:
+        raise ValueError(f"Unsupported sequence backend: {sequence_backend}")
+    if backend_key not in _EXTENSION_CACHE:
+        spec_cfg = _BACKEND_SPECS[backend_key]
+        sequence_processor = _load_shared_object(
+            spec_cfg["sequence_name"], spec_cfg["sequence_path"]
+        )
+        pattern_freq_cuda = _load_shared_object(
+            spec_cfg["pattern_name"], spec_cfg["pattern_path"]
+        )
+        _EXTENSION_CACHE[backend_key] = (sequence_processor, pattern_freq_cuda)
+    return _EXTENSION_CACHE[backend_key]
+
+
+def _load_alignment_payload(sp_mod, phy_path: Path, device: torch.device, sequence_backend: str):
+    backend_key = sequence_backend.strip().lower()
+    if backend_key == "v3":
+        seq_payload, species_names, seq_length = sp_mod.load_phy_to_packed_tensor(
+            str(phy_path), drop_conserved_sites=True
+        )
+        seq_cuda = torch.from_numpy(seq_payload).to(device)
+        return seq_payload.shape[0], list(species_names), int(seq_length), seq_cuda
+
+    seq_tensor, species_names = sp_mod.load_phy_to_tensor(
+        str(phy_path), drop_conserved_sites=True
     )
-    sequence_processor = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(sequence_processor)
-
-    # Load CUDA pattern frequency processor
-    spec = importlib.util.spec_from_file_location(
-        "pattern_freq_cuda",
-        "cpp_source/cuda13_pattern_freq/pattern_freq_cuda.cpython-310-x86_64-linux-gnu.so"
-    )
-    pattern_freq_cuda = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(pattern_freq_cuda)
-
-    return sequence_processor, pattern_freq_cuda
+    seq_cuda = torch.from_numpy(seq_tensor).to(device)
+    return seq_tensor.shape[0], list(species_names), int(seq_tensor.shape[1]), seq_cuda
 
 
-# Load C++ extensions at module level
-sp, pattern_freq_cuda = _load_cpp_extensions()
+def _compute_pattern_frequencies(pattern_mod, seq_cuda, idx_cuda, seq_length: int, sequence_backend: str):
+    backend_key = sequence_backend.strip().lower()
+    if backend_key == "v3":
+        return pattern_mod.compute_pattern_frequencies_cuda_packed(seq_cuda, idx_cuda, seq_length)
+    return pattern_mod.compute_pattern_frequencies_cuda(seq_cuda, idx_cuda)
 
 
 ###################################################################################################
@@ -64,6 +105,7 @@ def run_qf(
     infer_batch_size=32,
     ref_tree_path: str = None,
     metric: str = "rf",
+    sequence_backend: str = "original",
 ):
     """
     Run QuartFormer phylogenetic tree inference.
@@ -91,6 +133,9 @@ def run_qf(
         metric: Evaluation metric when ref_tree_path is provided
             - "rf": Robinson-Foulds distance (0-1, lower is better)
             - "quartet": Quartet concordance (0-1, higher is better)
+        sequence_backend: Sequence preprocessing backend
+            - "original": int8 dense alignment + original CUDA pattern kernel
+            - "v3": 4-bit packed alignment + v3 CUDA pattern kernel
 
     Returns:
         str: Path to output tree file, or tuple of (tree_path, metric_value) if ref_tree_path provided
@@ -102,6 +147,8 @@ def run_qf(
     output_tree_path = _normalize_output_path(output_tree_path, phy_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_size = 24
+    sequence_backend_key = sequence_backend.strip().lower()
+    sp, pattern_freq_cuda = _load_cpp_extensions(sequence_backend_key)
 
     # Helper functions
     def _model_dir(species_for_model: int) -> Path:
@@ -132,8 +179,9 @@ def run_qf(
     # ================================================================================
     # Load Input Data
     # ================================================================================
-    seq_tensor, species_names = sp.load_phy_to_tensor(str(phy_path), drop_conserved_sites=True)
-    num_species = seq_tensor.shape[0]
+    num_species, species_names, seq_length, seq_cuda = _load_alignment_payload(
+        sp, phy_path, device, sequence_backend_key
+    )
 
     if num_species < 24:
         raise ValueError("run_qf requires species count >= 24")
@@ -147,7 +195,10 @@ def run_qf(
 
     # 统一组装器选择策略（不受 run_mode 影响）
     selected_assembler = "qfm-fi" if num_species <= 96 else "tree-qmc"
-    print(f"[INFO] run_mode={run_mode_key}, assembler={selected_assembler}, species={num_species}")
+    print(
+        f"[INFO] run_mode={run_mode_key}, assembler={selected_assembler}, "
+        f"species={num_species}, sequence_backend={sequence_backend_key}"
+    )
 
     # Taxon label conversion
     taxon_prefix = "t"
@@ -216,8 +267,7 @@ def run_qf(
     attn_model = QuartFormer(species_num=model_size)
     attn_model.load_state_dict(torch.load(model_dir / "qf1.pt", map_location="cpu", weights_only=False))
     attn_model = attn_model.to(device).eval()
-    seq_cuda = torch.from_numpy(seq_tensor).to(device)
-    print(f"seq_cuda shape: {seq_cuda.shape}")
+    print(f"seq_cuda shape: {seq_cuda.shape}, effective_seq_length={seq_length}")
 
     local_quartet_template = np.asarray(
         list(itertools.combinations(range(model_size), 4)), dtype=np.int32
@@ -299,7 +349,11 @@ def run_qf(
                 )
             batch_quartets_np.append(quartets_np)
             idx_cuda = torch.from_numpy(quartets_np).to(device=device, dtype=torch.long)
-            batch_pattern_tensors.append(pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_cuda))
+            batch_pattern_tensors.append(
+                _compute_pattern_frequencies(
+                    pattern_freq_cuda, seq_cuda, idx_cuda, seq_length, sequence_backend_key
+                )
+            )
 
         # Run inference
         pattern_batch = torch.stack(batch_pattern_tensors, dim=0)
@@ -476,7 +530,9 @@ def run_qf(
             return t
 
         idx_c = torch.tensor(quartets, dtype=torch.long, device=device)
-        p_tensor = pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_c)
+        p_tensor = _compute_pattern_frequencies(
+            pattern_freq_cuda, seq_cuda, idx_c, seq_length, sequence_backend_key
+        )
 
         with torch.no_grad():
             logits = mlp_model(p_tensor)
@@ -779,6 +835,12 @@ Examples:
     # Advanced parameters
     parser.add_argument("--k-param", type=float, default=3.0, help="Sampling parameter: number of sampled quartets = species_count^k (default: 3.0)")
     parser.add_argument("--infer-batch-size", type=int, default=32, help="Inference batch size (default: 32)")
+    parser.add_argument(
+        "--sequence-backend",
+        choices=["original", "v3"],
+        default="original",
+        help="Sequence preprocessing backend: original (dense int8) or v3 (4-bit packed)",
+    )
     parser.add_argument("--no-cleanup-temp-files", action="store_true", help="Keep temporary files")
 
     args = parser.parse_args()
@@ -797,6 +859,7 @@ Examples:
         infer_batch_size=args.infer_batch_size,
         ref_tree_path=ref_tree_path,
         metric=args.metric,
+        sequence_backend=args.sequence_backend,
     )
 
     # Handle return value
