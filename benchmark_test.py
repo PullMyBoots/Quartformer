@@ -16,7 +16,7 @@ cuda_pattern_path = cpp_source_path / "cuda13_pattern_freq"
 if str(cuda_pattern_path) not in sys.path:
     sys.path.insert(0, str(cuda_pattern_path))
 
-from run_qf import run_qf
+from run_qf_copy import run_qf
 
 
 def run_benchmark(
@@ -178,7 +178,7 @@ if __name__ == "__main__":
     SPECIES_LIST = [24, 96, 320]
 
     # 要测试的DNA长度列表
-    DNA_LEN_LIST = [100000000]
+    DNA_LEN_LIST = [1000000]
 
     # 运行模式: "fast" (只保留top1) 或 "regular" (保留全部拓扑)
     RUN_MODE = "regular"
@@ -190,7 +190,7 @@ if __name__ == "__main__":
     K_PARAM = 3
 
     # 推断批次大小
-    INFER_BATCH_SIZE = 8
+    INFER_BATCH_SIZE = 16
 
     # 是否清理临时文件
     CLEANUP = True

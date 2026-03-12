@@ -50,6 +50,50 @@ def _load_cpp_extensions():
 sp, pattern_freq_cuda = _load_cpp_extensions()
 
 
+def _aggregate_quartets_on_cpu(
+    quartets_flat: np.ndarray,
+    weights_flat: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Aggregate duplicate quartets on CPU."""
+    quartet_keys = _encode_quartet_keys_static(quartets_flat)
+    uniq_keys, inv = np.unique(quartet_keys, return_inverse=True)
+    batch_sums = np.zeros((uniq_keys.size, 3), dtype=np.float64)
+    for cls_idx in range(3):
+        batch_sums[:, cls_idx] = np.bincount(
+            inv, weights=weights_flat[:, cls_idx], minlength=uniq_keys.size
+        )
+    batch_counts = np.bincount(inv, minlength=uniq_keys.size).astype(np.int64)
+    return uniq_keys, batch_sums, batch_counts
+
+
+def _reduce_quartet_aggregates_on_cpu(
+    key_parts: list[np.ndarray],
+    sum_parts: list[np.ndarray],
+    count_parts: list[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Reduce a set of quartet aggregates on CPU."""
+    merged_keys = np.concatenate(key_parts)
+    merged_sums = np.concatenate(sum_parts, axis=0)
+    merged_counts = np.concatenate(count_parts)
+
+    uniq_keys, inv = np.unique(merged_keys, return_inverse=True)
+    reduced_sums = np.zeros((uniq_keys.size, 3), dtype=np.float64)
+    for cls_idx in range(3):
+        reduced_sums[:, cls_idx] = np.bincount(
+            inv, weights=merged_sums[:, cls_idx], minlength=uniq_keys.size
+        )
+    reduced_counts = np.bincount(
+        inv, weights=merged_counts, minlength=uniq_keys.size
+    ).astype(np.int64)
+    return uniq_keys, reduced_sums, reduced_counts
+
+
+def _encode_quartet_keys_static(quartets_np: np.ndarray) -> np.ndarray:
+    """Encode quartet indices to single uint64 keys."""
+    q = quartets_np.astype(np.uint64, copy=False)
+    return (q[:, 0] << 48) | (q[:, 1] << 32) | (q[:, 2] << 16) | q[:, 3]
+
+
 ###################################################################################################
 # Main Inference Pipeline
 ###################################################################################################
@@ -111,8 +155,7 @@ def run_qf(
 
     def _encode_quartet_keys(quartets_np: np.ndarray) -> np.ndarray:
         """Encode quartet indices to single uint64 keys."""
-        q = quartets_np.astype(np.uint64, copy=False)
-        return (q[:, 0] << 48) | (q[:, 1] << 32) | (q[:, 2] << 16) | q[:, 3]
+        return _encode_quartet_keys_static(quartets_np)
 
     def _decode_quartet_keys(keys_np: np.ndarray) -> np.ndarray:
         """Decode uint64 keys back to quartet indices."""
@@ -225,57 +268,49 @@ def run_qf(
         list(itertools.combinations(range(model_size), 4)), dtype=np.int32
     )
 
-    # Aggregation buffers
+    # Aggregation buffers live on CPU. Use shard-local reduction to avoid
+    # repeatedly merging a single giant global table each batch.
     agg_quartet_keys = np.empty(0, dtype=np.uint64)
     agg_weight_sums = np.empty((0, 3), dtype=np.float64)
     agg_counts = np.empty(0, dtype=np.int64)
 
-    pending_keys = []
-    pending_sums = []
-    pending_counts = []
-    pending_entries = 0
+    num_agg_shards = 128 if num_species >= 512 else (64 if num_species >= 160 else 32)
+    shard_mask = num_agg_shards - 1
     flush_threshold = 3_000_000 if num_species >= 160 else 1_000_000
+    shard_flush_threshold = max(50_000, flush_threshold // num_agg_shards)
+    current_len = local_quartet_template.shape[0]
+    target_len = 10640
+    pad_len = target_len - current_len
+    shard_agg_keys = [np.empty(0, dtype=np.uint64) for _ in range(num_agg_shards)]
+    shard_agg_sums = [np.empty((0, 3), dtype=np.float64) for _ in range(num_agg_shards)]
+    shard_agg_counts = [np.empty(0, dtype=np.int64) for _ in range(num_agg_shards)]
+    pending_keys = [[] for _ in range(num_agg_shards)]
+    pending_sums = [[] for _ in range(num_agg_shards)]
+    pending_counts = [[] for _ in range(num_agg_shards)]
+    pending_entries = np.zeros(num_agg_shards, dtype=np.int64)
 
-    def _flush_quartet_aggregates():
-        """Flush pending quartet aggregates to main aggregation buffers."""
-        nonlocal agg_quartet_keys, agg_weight_sums, agg_counts
-        nonlocal pending_keys, pending_sums, pending_counts, pending_entries
-        if pending_entries == 0:
+    def _flush_shard(shard_idx: int):
+        if pending_entries[shard_idx] == 0:
             return
 
         key_parts = []
         sum_parts = []
         count_parts = []
-        if agg_quartet_keys.size > 0:
-            key_parts.append(agg_quartet_keys)
-            sum_parts.append(agg_weight_sums)
-            count_parts.append(agg_counts)
-        key_parts.extend(pending_keys)
-        sum_parts.extend(pending_sums)
-        count_parts.extend(pending_counts)
+        if shard_agg_keys[shard_idx].size > 0:
+            key_parts.append(shard_agg_keys[shard_idx])
+            sum_parts.append(shard_agg_sums[shard_idx])
+            count_parts.append(shard_agg_counts[shard_idx])
+        key_parts.extend(pending_keys[shard_idx])
+        sum_parts.extend(pending_sums[shard_idx])
+        count_parts.extend(pending_counts[shard_idx])
 
-        merged_keys = np.concatenate(key_parts)
-        merged_sums = np.concatenate(sum_parts, axis=0)
-        merged_counts = np.concatenate(count_parts)
-
-        uniq_keys, inv = np.unique(merged_keys, return_inverse=True)
-        reduced_sums = np.zeros((uniq_keys.size, 3), dtype=np.float64)
-        for cls_idx in range(3):
-            reduced_sums[:, cls_idx] = np.bincount(
-                inv, weights=merged_sums[:, cls_idx], minlength=uniq_keys.size
-            )
-        reduced_counts = np.bincount(
-            inv, weights=merged_counts, minlength=uniq_keys.size
-        ).astype(np.int64)
-
-        agg_quartet_keys = uniq_keys
-        agg_weight_sums = reduced_sums
-        agg_counts = reduced_counts
-
-        pending_keys.clear()
-        pending_sums.clear()
-        pending_counts.clear()
-        pending_entries = 0
+        shard_agg_keys[shard_idx], shard_agg_sums[shard_idx], shard_agg_counts[shard_idx] = _reduce_quartet_aggregates_on_cpu(
+            key_parts, sum_parts, count_parts
+        )
+        pending_keys[shard_idx].clear()
+        pending_sums[shard_idx].clear()
+        pending_counts[shard_idx].clear()
+        pending_entries[shard_idx] = 0
 
     # Batch inference loop
     print(f"[INFO] Starting batch inference ({len(blocks)} blocks, batch_size={infer_batch_size})...")
@@ -283,87 +318,100 @@ def run_qf(
     from tqdm import tqdm
 
     pbar = tqdm(total=len(blocks), desc="[INFO] Batch inference progress")
-    for i in range(0, len(blocks), infer_batch_size):
-        batch_blocks = blocks[i : i + infer_batch_size]
-        actual_bs = len(batch_blocks)
-        batch_pattern_tensors = []
-        batch_quartets_np = []
+    try:
+        for i in range(0, len(blocks), infer_batch_size):
+            batch_blocks = blocks[i : i + infer_batch_size]
+            actual_bs = len(batch_blocks)
+            block_matrix = np.asarray([sorted(block) for block in batch_blocks], dtype=np.int32)
+            if block_matrix.ndim != 2 or block_matrix.shape[1] != model_size:
+                raise ValueError("All inference blocks must contain exactly 24 taxa")
 
-        # Prepare batch data
-        for block in batch_blocks:
-            block_sorted = np.asarray(sorted(block), dtype=np.int32)
-            if block_sorted.size == model_size:
-                quartets_np = block_sorted[local_quartet_template]
-            else:
-                quartets_np = np.asarray(
-                    list(itertools.combinations(block_sorted.tolist(), 4)),
-                    dtype=np.int32,
-                )
-            batch_quartets_np.append(quartets_np)
-            idx_cuda = torch.from_numpy(quartets_np).to(device=device, dtype=torch.long)
+            batch_quartets_np = np.take(block_matrix, local_quartet_template, axis=1)
+            quartets_flat_np = np.ascontiguousarray(batch_quartets_np.reshape(-1, 4))
+            idx_cuda = torch.from_numpy(quartets_flat_np).to(device=device, dtype=torch.long)
             if hasattr(pattern_freq_cuda, "compute_pattern_frequencies_cuda_packed"):
-                batch_pattern_tensors.append(
-                    pattern_freq_cuda.compute_pattern_frequencies_cuda_packed(seq_cuda, idx_cuda, seq_length)
+                pattern_flat = pattern_freq_cuda.compute_pattern_frequencies_cuda_packed(
+                    seq_cuda, idx_cuda, seq_length
                 )
             else:
-                batch_pattern_tensors.append(pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_cuda))
+                pattern_flat = pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_cuda)
 
-        # Run inference
-        pattern_batch = torch.stack(batch_pattern_tensors, dim=0)
-        species_batch = species_enc.unsqueeze(0).expand(actual_bs, -1, -1)
-        input_batch = torch.cat([species_batch, pattern_batch], dim=2)
-
-        # Padding到固定长度（如10640），在末尾补0
-        target_len = 10640  # 目标长度，可根据需要调整
-        current_len = 10626
-        pad_len = 14
-
-       
-        input_batch_padded = torch.cat(
-            [input_batch, input_batch.new_zeros((actual_bs, pad_len, input_batch.size(2)))],
-            dim=1,
-        )
-    
-
-        with torch.no_grad():
-            logits = attn_model(input_batch_padded, coeff_blocks, quartet_matrix)
-            # 截取回有效长度
-            logits = logits[:, :current_len, :]
-            probs = torch.softmax(logits, dim=-1)
-
-            # fast模式只保留top1拓扑权重，regular模式保留所有拓扑权重
-            if run_mode_key == "fast":
-                top1_weights = torch.zeros_like(probs)
-                top_indices = torch.argmax(probs, dim=-1, keepdim=True)
-                top_values = torch.gather(probs, dim=-1, index=top_indices)
-                top1_weights.scatter_(dim=-1, index=top_indices, src=top_values)
-                weights_batch = (top1_weights * 100.0).cpu().numpy()
-            else:
-                weights_batch = (probs * 100.0).cpu().numpy()
-
-        # Aggregate results
-        quartets_flat = np.concatenate(batch_quartets_np, axis=0)
-        weights_flat = weights_batch.reshape(-1, 3).astype(np.float64, copy=False)
-        quartet_keys_flat = _encode_quartet_keys(quartets_flat)
-
-        uniq_keys, inv = np.unique(quartet_keys_flat, return_inverse=True)
-        batch_sums = np.zeros((uniq_keys.size, 3), dtype=np.float64)
-        for cls_idx in range(3):
-            batch_sums[:, cls_idx] = np.bincount(
-                inv, weights=weights_flat[:, cls_idx], minlength=uniq_keys.size
+            pattern_batch = pattern_flat.reshape(actual_bs, current_len, -1)
+            species_batch = species_enc.unsqueeze(0).expand(actual_bs, -1, -1)
+            input_batch = torch.cat([species_batch, pattern_batch], dim=2)
+            input_batch_padded = torch.cat(
+                [input_batch, input_batch.new_zeros((actual_bs, pad_len, input_batch.size(2)))],
+                dim=1,
             )
-        batch_counts = np.bincount(inv, minlength=uniq_keys.size).astype(np.int64)
 
-        pending_keys.append(uniq_keys)
-        pending_sums.append(batch_sums)
-        pending_counts.append(batch_counts)
-        pending_entries += uniq_keys.size
-        if pending_entries >= flush_threshold:
-            _flush_quartet_aggregates()
-        pbar.update(actual_bs)
+            with torch.no_grad():
+                logits = attn_model(input_batch_padded, coeff_blocks, quartet_matrix)
+                logits = logits[:, :current_len, :]
+                probs = torch.softmax(logits, dim=-1)
 
-    pbar.close()
-    _flush_quartet_aggregates()
+                if run_mode_key == "fast":
+                    top1_weights = torch.zeros_like(probs)
+                    top_indices = torch.argmax(probs, dim=-1, keepdim=True)
+                    top_values = torch.gather(probs, dim=-1, index=top_indices)
+                    top1_weights.scatter_(dim=-1, index=top_indices, src=top_values)
+                    weights_batch = top1_weights * 100.0
+                else:
+                    weights_batch = probs * 100.0
+
+            weights_flat = (
+                weights_batch.detach()
+                .cpu()
+                .reshape(-1, 3)
+                .numpy()
+                .astype(np.float64, copy=False)
+            )
+            uniq_keys, batch_sums, batch_counts = _aggregate_quartets_on_cpu(
+                quartets_flat_np, weights_flat
+            )
+
+            shard_ids = (uniq_keys & np.uint64(shard_mask)).astype(np.int32, copy=False)
+            order = np.argsort(shard_ids, kind="stable")
+            uniq_keys = uniq_keys[order]
+            batch_sums = batch_sums[order]
+            batch_counts = batch_counts[order]
+            shard_ids = shard_ids[order]
+
+            split_points = np.flatnonzero(np.diff(shard_ids)) + 1
+            starts = np.concatenate(([0], split_points))
+            ends = np.concatenate((split_points, [uniq_keys.size]))
+
+            for start, end in zip(starts, ends):
+                shard_idx = int(shard_ids[start])
+                pending_keys[shard_idx].append(uniq_keys[start:end])
+                pending_sums[shard_idx].append(batch_sums[start:end])
+                pending_counts[shard_idx].append(batch_counts[start:end])
+                pending_entries[shard_idx] += end - start
+                if pending_entries[shard_idx] >= shard_flush_threshold:
+                    _flush_shard(shard_idx)
+
+            pbar.update(actual_bs)
+    finally:
+        pbar.close()
+
+    key_parts = []
+    sum_parts = []
+    count_parts = []
+    for shard_idx in range(num_agg_shards):
+        _flush_shard(shard_idx)
+        if shard_agg_keys[shard_idx].size == 0:
+            continue
+        key_parts.append(shard_agg_keys[shard_idx])
+        sum_parts.append(shard_agg_sums[shard_idx])
+        count_parts.append(shard_agg_counts[shard_idx])
+
+    if key_parts:
+        agg_quartet_keys = np.concatenate(key_parts)
+        agg_weight_sums = np.concatenate(sum_parts, axis=0)
+        agg_counts = np.concatenate(count_parts)
+    else:
+        agg_quartet_keys = np.empty(0, dtype=np.uint64)
+        agg_weight_sums = np.empty((0, 3), dtype=np.float64)
+        agg_counts = np.empty(0, dtype=np.int64)
 
     # ================================================================================
     # Average Weights and Assemble Initial Tree
@@ -376,6 +424,11 @@ def run_qf(
     avg_weights_int = np.rint(
         agg_weight_sums / agg_counts[:, None]
     ).astype(np.int32)
+    invalid_quartet_count = int(np.count_nonzero(~np.any(avg_weights_int > 0, axis=1)))
+    if invalid_quartet_count > 0:
+        raise RuntimeError(
+            f"Aggregation produced {invalid_quartet_count} quartets with no positive topology weight"
+        )
     quartets_unique = _decode_quartet_keys(agg_quartet_keys)
 
     # Convert to split format
@@ -754,7 +807,7 @@ Examples:
     )
 
     # Required arguments
-    parser.add_argument("--phy", help="Input alignment file path (PHY format)",default='/mnt/c/Users/descfly/Desktop/publish_code/data/96/0/GTR_100000000_MSA.phy')
+    parser.add_argument("--phy", help="Input alignment file path (PHY format)",default='/mnt/c/Users/descfly/Desktop/publish_code/data/24/0/GTR_1000000_MSA.phy')
     parser.add_argument("--out", default="output_qf.nwk", help="Output tree path (file or directory)")
 
     # Task type

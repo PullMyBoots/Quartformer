@@ -40,7 +40,7 @@ QuartFormer (K=3) inference time compared with other quartet-based methods. **Mb
 - Triton: 3.4.0
 - Java: OpenJDK 17
 - CMake: 3.30+
-- GPU: NVIDIA GPU with **>= 8 GB VRAM** (required)
+- GPU: NVIDIA GPU with **>= 6 GB VRAM** (required)
 
 ## Installation (Bundled Release)
 

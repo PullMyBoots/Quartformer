@@ -154,3 +154,5 @@ benchmark_results.csv
 # Local/private or heavy vendor directories not for publishing
 software/
 .claude/
+clash/
+benchmark_test.py
