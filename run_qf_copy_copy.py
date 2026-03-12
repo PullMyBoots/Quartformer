@@ -11,9 +11,7 @@ import argparse
 import itertools
 import importlib.util
 import os
-import queue
 import tempfile
-import threading
 from pathlib import Path
 from collections import defaultdict
 import numpy as np
@@ -70,6 +68,10 @@ def _load_optional_extension(module_name: str, glob_pattern: str):
 quartet_aggregate = _load_optional_extension(
     "quartet_aggregate",
     "cpp_source/quartet_aggregate*.so",
+)
+quartet_sink = _load_optional_extension(
+    "quartet_sink",
+    "cpp_source/quartet_sink*.so",
 )
 
 
@@ -313,10 +315,9 @@ def run_qf(
     current_len = local_quartet_template.shape[0]
     target_len = 10640
     pad_len = target_len - current_len
-    force_enable_async = os.environ.get("QF_ENABLE_ASYNC_AGG", "").strip().lower() in {"1", "true", "yes"}
-    force_disable_async = os.environ.get("QF_DISABLE_ASYNC_AGG", "").strip().lower() in {"1", "true", "yes"}
-    enable_async_aggregation = (
-        device.type == "cuda" and num_species >= 160 and force_enable_async and not force_disable_async
+    force_disable_deferred = os.environ.get("QF_DISABLE_DEFERRED_AGG", "").strip().lower() in {"1", "true", "yes"}
+    enable_deferred_aggregation = (
+        device.type == "cuda" and num_species >= 160 and not force_disable_deferred
     )
 
     def _init_aggregation_state():
@@ -421,69 +422,22 @@ def run_qf(
     agg_quartet_keys = np.empty(0, dtype=np.uint64)
     agg_weight_sums = np.empty((0, 3), dtype=np.float64)
     agg_counts = np.empty(0, dtype=np.int64)
-    task_queue = None
-    result_queue = None
-    worker_thread = None
     copy_stream = None
-    pending_copy_tasks = None
+    deferred_batches = None
+    deferred_sink = None
 
-    if enable_async_aggregation:
-        task_queue = queue.Queue(maxsize=4)
-        result_queue = queue.Queue(maxsize=1)
+    if enable_deferred_aggregation:
         copy_stream = torch.cuda.Stream(device=device)
-        pending_copy_tasks = []
-
-        def _aggregation_worker():
-            worker_state = _init_aggregation_state()
-            try:
-                while True:
-                    task = task_queue.get()
-                    if task is None:
-                        task_queue.task_done()
-                        break
-
-                    quartets_flat_np, weights_host = task
-                    try:
-                        weights_flat = (
-                            weights_host.numpy()
-                            .reshape(-1, 3)
-                            .astype(np.float64, copy=False)
-                        )
-                        uniq_keys, batch_sums, batch_counts = _aggregate_quartets_on_cpu(
-                            quartets_flat_np, weights_flat
-                        )
-                        _merge_batch_into_state(worker_state, uniq_keys, batch_sums, batch_counts)
-                    finally:
-                        task_queue.task_done()
-
-                result_queue.put(("ok", _finalize_aggregation_state(worker_state)))
-            except Exception as exc:
-                result_queue.put(("error", exc))
-
-        worker_thread = threading.Thread(
-            target=_aggregation_worker,
-            name="quartet-aggregation-worker",
-            daemon=True,
-        )
-        worker_thread.start()
-
-    def _drain_ready_copy_tasks(force_all: bool = False):
-        if not enable_async_aggregation:
-            return
-
-        next_pending = []
-        for quartets_flat_np, weights_host, copy_event in pending_copy_tasks:
-            if force_all or copy_event.query():
-                task_queue.put((quartets_flat_np, weights_host))
-            else:
-                next_pending.append((quartets_flat_np, weights_host, copy_event))
-        pending_copy_tasks[:] = next_pending
+        deferred_batches = []
+        if quartet_sink is not None:
+            deferred_sink = quartet_sink.QuartetSink(
+                reserve_hint=len(blocks) * current_len,
+                num_shards=num_agg_shards,
+            )
 
     pbar = tqdm(total=len(blocks), desc="[INFO] Batch inference progress")
     try:
         for i in range(0, len(blocks), infer_batch_size):
-            if enable_async_aggregation:
-                _drain_ready_copy_tasks()
             batch_blocks = blocks[i : i + infer_batch_size]
             actual_bs = len(batch_blocks)
             block_matrix = np.asarray([sorted(block) for block in batch_blocks], dtype=np.int32)
@@ -522,7 +476,7 @@ def run_qf(
                 else:
                     weights_batch = probs * 100.0
 
-            if enable_async_aggregation:
+            if enable_deferred_aggregation:
                 weights_src = weights_batch.detach().reshape(-1, 3).contiguous()
                 weights_host = torch.empty(
                     (actual_bs * current_len, 3),
@@ -540,11 +494,11 @@ def run_qf(
                     weights_src.record_stream(copy_stream)
                 copy_event = torch.cuda.Event()
                 copy_event.record(copy_stream)
-                pending_copy_tasks.append((quartets_flat_np, weights_host, copy_event))
-                if len(pending_copy_tasks) >= 4:
-                    oldest_quartets, oldest_weights, oldest_event = pending_copy_tasks.pop(0)
-                    oldest_event.synchronize()
-                    task_queue.put((oldest_quartets, oldest_weights))
+                if deferred_sink is not None:
+                    deferred_batches.append((quartets_flat_np, weights_host, copy_event))
+                else:
+                    batch_keys = _encode_quartet_keys(quartets_flat_np)
+                    deferred_batches.append((batch_keys, weights_host, copy_event))
             else:
                 weights_flat = (
                     weights_batch.detach()
@@ -562,15 +516,34 @@ def run_qf(
     finally:
         pbar.close()
 
-    if enable_async_aggregation:
-        _drain_ready_copy_tasks(force_all=True)
-        task_queue.put(None)
-        task_queue.join()
-        worker_thread.join()
-        status, payload = result_queue.get()
-        if status != "ok":
-            raise payload
-        agg_quartet_keys, agg_weight_sums, agg_counts = payload
+    if enable_deferred_aggregation:
+        print(f"[INFO] Deferred aggregation stage: batches={len(deferred_batches)}")
+        for _, _, copy_event in deferred_batches:
+            copy_event.synchronize()
+
+        aggregate_pbar = tqdm(total=len(deferred_batches), desc="[INFO] Aggregation progress")
+        try:
+            if deferred_sink is not None:
+                for batch_quartets_np, weights_host, _ in deferred_batches:
+                    deferred_sink.append_quartets(
+                        batch_quartets_np,
+                        weights_host.numpy().reshape(-1, 3),
+                    )
+                    aggregate_pbar.update(1)
+                agg_quartet_keys, agg_weight_sums, agg_counts = deferred_sink.finalize()
+            else:
+                for batch_keys, weights_host, _ in deferred_batches:
+                    batch_sums = (
+                        weights_host.numpy()
+                        .reshape(-1, 3)
+                        .astype(np.float64, copy=False)
+                    )
+                    batch_counts = np.ones(batch_keys.shape[0], dtype=np.int64)
+                    _merge_batch_into_state(aggregation_state, batch_keys, batch_sums, batch_counts)
+                    aggregate_pbar.update(1)
+                agg_quartet_keys, agg_weight_sums, agg_counts = _finalize_aggregation_state(aggregation_state)
+        finally:
+            aggregate_pbar.close()
     else:
         agg_quartet_keys, agg_weight_sums, agg_counts = _finalize_aggregation_state(aggregation_state)
 
@@ -975,7 +948,7 @@ Examples:
     parser.add_argument(
         "--task-type",
         choices=["homogeneous", "heterogeneous"],
-        default="homogeneous",
+        default="heterogeneous",
         help="Task type: homogeneous (single tree) or heterogeneous (multi-partition conflicts)"
     )
 
