@@ -7,6 +7,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+!cpp_source/sequence_processor.cpython-310-x86_64-linux-gnu.so
+!cpp_source/batching_algorithms.cpython-310-x86_64-linux-gnu.so
+!cpp_source/cuda13_pattern_freq/pattern_freq_cuda.cpython-310-x86_64-linux-gnu.so
 *.pyd
 
 # 分发 / 打包
