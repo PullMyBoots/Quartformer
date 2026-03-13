@@ -3,6 +3,7 @@ import importlib.util
 import itertools
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -10,8 +11,10 @@ import numpy as np
 import torch
 from ete3 import Tree
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SERVER_BIN_DIR = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent
+SERVER_BIN_DIR = REPO_ROOT / "server_bin"
+BACKEND_DIR = REPO_ROOT / "backend"
+BACKEND_V2_DIR = REPO_ROOT / "backend_v2"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -27,13 +30,59 @@ def _load_extension(module_name: str, so_path: Path):
     return module
 
 
-sp = _load_extension(
-    "sequence_processor_server",
-    SERVER_BIN_DIR / "sequence_processor_server.cpython-310-x86_64-linux-gnu.so",
+def _load_extension_by_stem(module_name: str, directory: Path, stem: str):
+    matches = sorted(directory.glob(f"{stem}*.so"))
+    if not matches:
+        raise FileNotFoundError(f"未找到扩展模块: {directory / (stem + '*.so')}")
+    return _load_extension(module_name, matches[0])
+
+
+class _PackedSequenceBackendAdapter:
+    def __init__(self, impl):
+        self._impl = impl
+        self._last_seq_length = None
+
+    def load_phy_to_tensor(self, phy_path, drop_conserved_sites=False):
+        packed, species_names, seq_length = self._impl.load_phy_to_packed_tensor(
+            phy_path,
+            drop_conserved_sites,
+        )
+        self._last_seq_length = int(seq_length)
+        return packed, species_names
+
+    @property
+    def sequence_length(self) -> int:
+        if self._last_seq_length is None:
+            raise RuntimeError("Sequence length not initialized before pattern frequency call")
+        return self._last_seq_length
+
+
+class _PackedPatternBackendAdapter:
+    def __init__(self, impl, sp_adapter: _PackedSequenceBackendAdapter):
+        self._impl = impl
+        self._sp_adapter = sp_adapter
+
+    def compute_pattern_frequencies_cuda(self, sequences, quartet_indices):
+        return self._impl.compute_pattern_frequencies_cuda_packed(
+            sequences,
+            quartet_indices,
+            self._sp_adapter.sequence_length,
+        ).contiguous()
+
+    def compute_pattern_frequencies_cuda_grouped_uniform(self, sequences, block_species):
+        return self._impl.compute_pattern_frequencies_cuda_grouped_uniform(
+            sequences,
+            block_species,
+            self._sp_adapter.sequence_length,
+        ).contiguous()
+
+
+sp = _PackedSequenceBackendAdapter(
+    _load_extension_by_stem("sequence_processor_backend_v2", BACKEND_V2_DIR, "sequence_processor_backend_v2")
 )
-pattern_freq_cuda = _load_extension(
-    "pattern_freq_cuda_server",
-    SERVER_BIN_DIR / "pattern_freq_cuda_server.cpython-310-x86_64-linux-gnu.so",
+pattern_freq_cuda = _PackedPatternBackendAdapter(
+    _load_extension_by_stem("pattern_freq_cuda_backend_v2", BACKEND_V2_DIR, "pattern_freq_cuda_backend_v2"),
+    sp,
 )
 
 def run_qf(
@@ -68,6 +117,25 @@ def run_qf(
     output_tree_path = _normalize_output_path(output_tree_path, phy_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_size = 24
+    cuda_sync = torch.cuda.synchronize if device.type == "cuda" else (lambda: None)
+
+    timing = {
+        "load_phy": 0.0,
+        "build_blocks": 0.0,
+        "load_model_assets": 0.0,
+        "quartet_prepare": 0.0,
+        "idx_upload": 0.0,
+        "pattern_freq": 0.0,
+        "input_prepare": 0.0,
+        "model_forward": 0.0,
+        "softmax_d2h": 0.0,
+        "cpu_aggregate": 0.0,
+        "flush_aggregates": 0.0,
+        "split_convert": 0.0,
+        "write_split_file": 0.0,
+        "assembler": 0.0,
+        "mlp_repair": 0.0,
+    }
 
     def _infer_model_label(default_task_type: str, *weight_paths) -> str:
         families = []
@@ -153,10 +221,12 @@ def run_qf(
         return result.returncode == 0 and output_file.exists()
 
     # --- 1. 加载数据与初始化 ---
+    t0 = time.perf_counter()
     seq_tensor, species_names = sp.load_phy_to_tensor(
         str(phy_path),
         drop_conserved_sites=True,
     )
+    timing["load_phy"] += time.perf_counter() - t0
     num_species = seq_tensor.shape[0]
     if num_species < 24:
         raise ValueError("run_qf 仅支持物种数 >= 24")
@@ -211,6 +281,7 @@ def run_qf(
     if num_species == 24:
         blocks = [list(range(num_species))]
     else:
+        t0 = time.perf_counter()
         so_path = REPO_ROOT / "cpp_source" / "batching_algorithms.cpython-310-x86_64-linux-gnu.so"
         spec = importlib.util.spec_from_file_location("batching_algorithms", so_path)
         batching_algorithms = importlib.util.module_from_spec(spec)
@@ -218,8 +289,10 @@ def run_qf(
         blocks = batching_algorithms.pair_balanced_block_design_v5(
             num_species=num_species, k_param=k_param, batch_size=model_size, seed=42, species_weight=2.0, threads=1
         )
+        timing["build_blocks"] += time.perf_counter() - t0
 
     # --- 3. 批量推断四元组权重 ---
+    t0 = time.perf_counter()
     model_dir = _model_dir(model_size)
     coeff_blocks = torch.load(model_dir / "coeff_blocks.pt", map_location="cpu", weights_only=False).to(device)
     quartet_matrix = torch.load(model_dir / "quartet_matrix.pt", map_location="cpu", weights_only=False).to(device)
@@ -244,6 +317,7 @@ def run_qf(
     attn_model.load_state_dict(torch.load(resolved_attn_weight, map_location="cpu", weights_only=False))
     attn_model = attn_model.to(device).eval()
     seq_cuda = torch.from_numpy(seq_tensor).to(device)
+    timing["load_model_assets"] += time.perf_counter() - t0
 
     local_quartet_template = np.asarray(
         list(itertools.combinations(range(model_size), 4)), dtype=np.int32
@@ -258,8 +332,6 @@ def run_qf(
     pending_sums = []
     pending_counts = []
     pending_entries = 0
-    flush_threshold = 3_000_000 if num_species >= 160 else 1_000_000
-
     shm_dir = Path("/dev/shm")
     if selected_assembler == "tree-qmc" and shm_dir.exists() and shm_dir.is_dir():
         result_dir = shm_dir / "publish_code_qf2_result"
@@ -398,6 +470,7 @@ def run_qf(
         actual_bs = len(batch_blocks)
         batch_quartets_np = np.empty((actual_bs, local_quartet_count, 4), dtype=np.int32)
 
+        t0 = time.perf_counter()
         for batch_idx, block in enumerate(batch_blocks):
             block_sorted = np.asarray(sorted(block), dtype=np.int32)
             if block_sorted.size != model_size:
@@ -405,13 +478,25 @@ def run_qf(
                     f"block 大小异常: {block_sorted.size}，预期固定为 {model_size}"
                 )
             batch_quartets_np[batch_idx] = block_sorted[local_quartet_template]
+        timing["quartet_prepare"] += time.perf_counter() - t0
 
         quartets_flat = batch_quartets_np.reshape(-1, 4)
-        idx_cuda = torch.as_tensor(quartets_flat, device=device, dtype=torch.long)
-        pattern_batch = pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_cuda).view(
-            actual_bs, local_quartet_count, -1
-        )
+        cuda_sync()
+        t0 = time.perf_counter()
+        idx_cuda = torch.as_tensor(quartets_flat, device=device, dtype=torch.int32)
+        cuda_sync()
+        timing["idx_upload"] += time.perf_counter() - t0
 
+        cuda_sync()
+        t0 = time.perf_counter()
+        pattern_batch = pattern_freq_cuda.compute_pattern_frequencies_cuda(
+            seq_cuda,
+            idx_cuda,
+        ).view(actual_bs, local_quartet_count, -1)
+        cuda_sync()
+        timing["pattern_freq"] += time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         species_batch = species_enc.unsqueeze(0).expand(actual_bs, -1, -1)
         input_batch = torch.cat([species_batch, pattern_batch], dim=2)
         if input_batch.size(1) != expected_valid_len:
@@ -422,16 +507,28 @@ def run_qf(
             [input_batch, input_batch.new_zeros((actual_bs, pad_len, input_batch.size(2)))],
             dim=1,
         )
+        canonical_input_batch = torch.empty_like(input_batch_for_model)
+        canonical_input_batch.copy_(input_batch_for_model)
+        input_batch_for_model = canonical_input_batch
+        timing["input_prepare"] += time.perf_counter() - t0
 
         with torch.no_grad():
+            cuda_sync()
+            t0 = time.perf_counter()
             logits = attn_model(input_batch_for_model, coeff_blocks, quartet_matrix)
+            cuda_sync()
+            timing["model_forward"] += time.perf_counter() - t0
+
             logits = logits[:, :expected_valid_len, :]
+            cuda_sync()
+            t0 = time.perf_counter()
             probs = torch.softmax(logits, dim=-1)
             if run_mode_key == "fast":
                 top_idx = torch.argmax(probs, dim=-1, keepdim=True)
                 top_prob = torch.gather(probs, dim=-1, index=top_idx)
                 probs = torch.zeros_like(probs).scatter_(dim=-1, index=top_idx, src=top_prob)
             weights_batch = (probs * 100.0).cpu().numpy()
+            timing["softmax_d2h"] += time.perf_counter() - t0
 
         raw_quartet_instances += int(quartets_flat.shape[0])
 
@@ -441,6 +538,7 @@ def run_qf(
             raw_split_lines += int(split_keys_batch.size)
             _append_split_lines(input_handle, split_keys_batch, split_weights_batch)
         else:
+            t0 = time.perf_counter()
             weights_flat = weights_batch.reshape(-1, 3).astype(np.float64, copy=False)
             quartet_keys_flat = _encode_quartet_keys(quartets_flat)
 
@@ -451,13 +549,12 @@ def run_qf(
                     inv, weights=weights_flat[:, cls_idx], minlength=uniq_keys.size
                 )
             batch_counts = np.bincount(inv, minlength=uniq_keys.size).astype(np.int64)
+            timing["cpu_aggregate"] += time.perf_counter() - t0
 
             pending_keys.append(uniq_keys)
             pending_sums.append(batch_sums)
             pending_counts.append(batch_counts)
             pending_entries += uniq_keys.size
-            if pending_entries >= flush_threshold:
-                _flush_quartet_aggregates()
         pbar.update(actual_bs)
     pbar.close()
     if skip_aggregation:
@@ -467,7 +564,9 @@ def run_qf(
             f"split_lines={raw_split_lines}, duplicates_kept=True"
         )
     else:
+        t0 = time.perf_counter()
         _flush_quartet_aggregates()
+        timing["flush_aggregates"] += time.perf_counter() - t0
 
         # --- 4. 均值化权重并组装初始树 ---
         if agg_quartet_keys.size == 0:
@@ -479,16 +578,21 @@ def run_qf(
         ).astype(np.int32)
         quartets_unique = _decode_quartet_keys(agg_quartet_keys)
 
+        t0 = time.perf_counter()
         split_keys_unique, split_weight_sums = _quartets_weights_to_splits(quartets_unique, avg_weights_int)
+        timing["split_convert"] += time.perf_counter() - t0
         if split_keys_unique.size == 0:
             print("[ERROR] 四元组均值权重全为 0，无法组装")
             return ""
 
         print(f"[INFO] 聚合统计: unique_quartets={agg_quartet_keys.size}, split_lines={split_keys_unique.size}")
 
+        t0 = time.perf_counter()
         with open(input_file, "w", buffering=16 * 1024 * 1024) as f:
             _append_split_lines(f, split_keys_unique, split_weight_sums)
+        timing["write_split_file"] += time.perf_counter() - t0
 
+    t0 = time.perf_counter()
     if not _run_quartet_assembler(
         input_file,
         output_file,
@@ -496,9 +600,11 @@ def run_qf(
     ):
         print("[ERROR] 初始组装失败")
         return ""
+    timing["assembler"] += time.perf_counter() - t0
 
     # --- 5. 多分叉修复流程 (MLP) ---
     print("[INFO] 正在检查并修复多分叉节点...")
+    t0 = time.perf_counter()
     tree = Tree(str(output_file))
     tree.unroot()
 
@@ -521,7 +627,7 @@ def run_qf(
             t.unroot()
             return t
 
-        idx_c = torch.tensor(quartets, dtype=torch.long, device=device)
+        idx_c = torch.tensor(quartets, dtype=torch.int32, device=device)
         p_tensor = pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_c)
         
         with torch.no_grad():
@@ -589,6 +695,7 @@ def run_qf(
             ch.detach()
         for guide_child in guide.children:
             target_node.add_child(build_resolved(guide_child))
+    timing["mlp_repair"] += time.perf_counter() - t0
 
     # --- 6. 完成 ---
     tree.unroot()
@@ -598,6 +705,25 @@ def run_qf(
             leaf.name = species_names[idx]
     tree.write(outfile=str(output_tree_path), format=1)
     print(f"[SUCCESS] 最终二叉树已保存至 {output_tree_path}")
+    print("[TIMING] Detailed Breakdown (seconds):")
+    for key in (
+        "load_phy",
+        "build_blocks",
+        "load_model_assets",
+        "quartet_prepare",
+        "idx_upload",
+        "pattern_freq",
+        "input_prepare",
+        "model_forward",
+        "softmax_d2h",
+        "cpu_aggregate",
+        "flush_aggregates",
+        "split_convert",
+        "write_split_file",
+        "assembler",
+        "mlp_repair",
+    ):
+        print(f"[TIMING] {key}={timing[key]:.6f}")
     if cleanup_temp_files:
         input_file.unlink(missing_ok=True)
         output_file.unlink(missing_ok=True)
@@ -631,7 +757,7 @@ def _normalize_output_path(output_tree_path, phy_path):
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Run server_bin dense pipeline in current repository.")
     parser.add_argument("--phy", required=True, help="Input alignment file path (PHY format)")
-    parser.add_argument("--out", required=True, help="Output tree path")
+    parser.add_argument("--out", help="Output tree path", default="output_tree.nwk")
     parser.add_argument(
         "--task-type",
         choices=["homogeneous", "heterogeneous"],
