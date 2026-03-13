@@ -451,6 +451,10 @@ def run_qf(
                 pattern_flat = pattern_freq_cuda.compute_pattern_frequencies_cuda_packed(
                     seq_cuda, idx_cuda, seq_length
                 )
+                # The packed cpp_source path can yield tensors whose values are correct
+                # but whose original GPU storage provenance causes forward divergence.
+                # Re-materialize into fresh storage before feeding the model.
+                pattern_flat = pattern_flat.contiguous().clone()
             else:
                 pattern_flat = pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_cuda)
 
@@ -672,6 +676,7 @@ def run_qf(
         idx_c = torch.tensor(quartets, dtype=torch.long, device=device)
         if hasattr(pattern_freq_cuda, "compute_pattern_frequencies_cuda_packed"):
             p_tensor = pattern_freq_cuda.compute_pattern_frequencies_cuda_packed(seq_cuda, idx_c, seq_length)
+            p_tensor = p_tensor.contiguous().clone()
         else:
             p_tensor = pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_c)
 
@@ -948,7 +953,7 @@ Examples:
     parser.add_argument(
         "--task-type",
         choices=["homogeneous", "heterogeneous"],
-        default="heterogeneous",
+        default="homogeneous",
         help="Task type: homogeneous (single tree) or heterogeneous (multi-partition conflicts)"
     )
 

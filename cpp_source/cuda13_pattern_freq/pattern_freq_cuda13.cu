@@ -1,5 +1,8 @@
 #include <torch/extension.h>
 
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+
 #include <cuda.h>
 #include <cuda_runtime.h>
 
@@ -122,6 +125,7 @@ torch::Tensor compute_pattern_frequencies_cuda13_packed(
     torch::Tensor quartet_indices,
     int64_t seq_length
 ) {
+    c10::cuda::CUDAGuard device_guard(sequences_packed.device());
     const int n_species = static_cast<int>(sequences_packed.size(0));
     const int packed_seq_length = static_cast<int>(sequences_packed.size(1));
     const int n_quartets = static_cast<int>(quartet_indices.size(0));
@@ -131,7 +135,8 @@ torch::Tensor compute_pattern_frequencies_cuda13_packed(
         torch::TensorOptions().dtype(torch::kFloat32).device(sequences_packed.device())
     );
 
-    pattern_freq_packed_kernel<<<n_quartets, kThreadsPerBlock>>>(
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    pattern_freq_packed_kernel<<<n_quartets, kThreadsPerBlock, 0, stream>>>(
         sequences_packed.data_ptr<uint8_t>(),
         quartet_indices.data_ptr<int64_t>(),
         result.data_ptr<float>(),
@@ -140,6 +145,7 @@ torch::Tensor compute_pattern_frequencies_cuda13_packed(
         packed_seq_length,
         n_species
     );
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     return result;
 }

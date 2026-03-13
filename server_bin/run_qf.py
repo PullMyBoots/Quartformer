@@ -10,8 +10,8 @@ import numpy as np
 import torch
 from ete3 import Tree
 
-REPO_ROOT = Path(__file__).resolve().parent
-SERVER_BIN_DIR = REPO_ROOT / "server_bin"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SERVER_BIN_DIR = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -27,63 +27,14 @@ def _load_extension(module_name: str, so_path: Path):
     return module
 
 
-class _PackedSequenceProcessorAdapter:
-    def __init__(self, impl):
-        self._impl = impl
-        self._last_seq_length = None
-
-    def load_phy_to_tensor(self, phy_path, drop_conserved_sites=False):
-        packed, species_names, seq_length = self._impl.load_phy_to_packed_tensor(
-            phy_path,
-            drop_conserved_sites,
-        )
-        self._last_seq_length = int(seq_length)
-        return packed, species_names
-
-    def compute_quartet_indices(self, *args, **kwargs):
-        return self._impl.compute_quartet_indices(*args, **kwargs)
-
-
-class _PackedPatternFreqAdapter:
-    def __init__(self, impl, sp_adapter: _PackedSequenceProcessorAdapter):
-        self._impl = impl
-        self._sp_adapter = sp_adapter
-
-    def compute_pattern_frequencies_cuda(self, sequences, quartet_indices):
-        if self._sp_adapter._last_seq_length is None:
-            raise RuntimeError("Sequence length not initialized before pattern frequency call")
-        return self._impl.compute_pattern_frequencies_cuda_packed(
-            sequences,
-            quartet_indices,
-            self._sp_adapter._last_seq_length,
-        )
-
-
-def _load_backend_modules(extension_backend: str):
-    backend = extension_backend.strip().lower().replace("-", "_")
-    if backend == "server_bin":
-        sp_module = _load_extension(
-            "sequence_processor_server",
-            SERVER_BIN_DIR / "sequence_processor_server.cpython-310-x86_64-linux-gnu.so",
-        )
-        pattern_module = _load_extension(
-            "pattern_freq_cuda_server",
-            SERVER_BIN_DIR / "pattern_freq_cuda_server.cpython-310-x86_64-linux-gnu.so",
-        )
-        return sp_module, pattern_module
-    if backend == "cpp_source":
-        packed_sp = _load_extension(
-            "sequence_processor",
-            REPO_ROOT / "cpp_source" / "sequence_processor.cpython-310-x86_64-linux-gnu.so",
-        )
-        packed_pattern = _load_extension(
-            "pattern_freq_cuda",
-            REPO_ROOT / "cpp_source" / "cuda13_pattern_freq" / "pattern_freq_cuda.cpython-310-x86_64-linux-gnu.so",
-        )
-        sp_adapter = _PackedSequenceProcessorAdapter(packed_sp)
-        pattern_adapter = _PackedPatternFreqAdapter(packed_pattern, sp_adapter)
-        return sp_adapter, pattern_adapter
-    raise ValueError(f"Unsupported extension backend: {extension_backend}")
+sp = _load_extension(
+    "sequence_processor_server",
+    SERVER_BIN_DIR / "sequence_processor_server.cpython-310-x86_64-linux-gnu.so",
+)
+pattern_freq_cuda = _load_extension(
+    "pattern_freq_cuda_server",
+    SERVER_BIN_DIR / "pattern_freq_cuda_server.cpython-310-x86_64-linux-gnu.so",
+)
 
 
 def run_qf(
@@ -99,7 +50,6 @@ def run_qf(
     ref_tree_path=None,
     metric: str = "rf",
     skip_aggregation: bool = False,
-    extension_backend: str = "cpp_source",
 ):
     """
     独立脚本增强版 run_QF_framework:
@@ -115,7 +65,6 @@ def run_qf(
         regular: 保留 3 个拓扑权重
         注：组装器选择与 run_mode 解耦，统一为 物种数 <=96 用 QFM-FI；>96 用 QMC(TREE-QMC)
     """
-    sp, pattern_freq_cuda = _load_backend_modules(extension_backend)
     phy_path = Path(phy_path)
     output_tree_path = _normalize_output_path(output_tree_path, phy_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -182,25 +131,18 @@ def run_qf(
                 raise FileNotFoundError(f"未找到 QFM-FI jar: {qfm_jar}")
             result = subprocess.run(
                 ["java", "-jar", str(qfm_jar), str(input_file), str(output_file), "4"],
-                check=False,
-                capture_output=True,
+                check=False, capture_output=True
             )
             return result.returncode == 0 and output_file.exists()
-
+        
+        # Default to TREE-QMC / QMC
         tree_qmc_bin_path = REPO_ROOT / "quartet_assemble_method" / "TREE-QMC" / "build" / "tree-qmc"
         if not tree_qmc_bin_path.exists():
             raise FileNotFoundError("未找到 tree-qmc 可执行文件")
         quartet_fmt = "___,___|___,___:___" if qmc_compact_format else "((___,___),(___,___));___"
         cmd = [
-            str(tree_qmc_bin_path),
-            "-i",
-            str(input_file),
-            "--quartets",
-            "--quartetformat",
-            quartet_fmt,
-            "-o",
-            str(output_file),
-            "--override",
+            str(tree_qmc_bin_path), "-i", str(input_file), "--quartets",
+            "--quartetformat", quartet_fmt, "-o", str(output_file), "--override"
         ]
         result = subprocess.run(
             cmd,
@@ -211,6 +153,7 @@ def run_qf(
         )
         return result.returncode == 0 and output_file.exists()
 
+    # --- 1. 加载数据与初始化 ---
     seq_tensor, species_names = sp.load_phy_to_tensor(
         str(phy_path),
         drop_conserved_sites=True,
@@ -224,8 +167,7 @@ def run_qf(
     selected_assembler = "qfm-fi" if num_species <= 96 else "tree-qmc"
     print(
         f"[INFO] model_label={model_label}, run_mode={run_mode_key}, "
-        f"selected_assembler={selected_assembler}, num_species={num_species}, "
-        f"extension_backend={extension_backend}"
+        f"selected_assembler={selected_assembler}, num_species={num_species}"
     )
 
     species_name_to_idx = {name: idx for idx, name in enumerate(species_names)}
@@ -263,25 +205,22 @@ def run_qf(
             out.append(idx)
         return out
 
+    # 预生成标签，避免热点路径反复 f-string 构造
     taxon_labels = [_idx_to_label(i) for i in range(num_species)]
 
+    # --- 2. 确定采样组合 (Blocks) ---
     if num_species == 24:
         blocks = [list(range(num_species))]
     else:
         so_path = REPO_ROOT / "cpp_source" / "batching_algorithms.cpython-310-x86_64-linux-gnu.so"
         spec = importlib.util.spec_from_file_location("batching_algorithms", so_path)
         batching_algorithms = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
         spec.loader.exec_module(batching_algorithms)
         blocks = batching_algorithms.pair_balanced_block_design_v5(
-            num_species=num_species,
-            k_param=k_param,
-            batch_size=model_size,
-            seed=42,
-            species_weight=2.0,
-            threads=1,
+            num_species=num_species, k_param=k_param, batch_size=model_size, seed=42, species_weight=2.0, threads=1
         )
 
+    # --- 3. 批量推断四元组权重 ---
     model_dir = _model_dir(model_size)
     coeff_blocks = torch.load(model_dir / "coeff_blocks.pt", map_location="cpu", weights_only=False).to(device)
     quartet_matrix = torch.load(model_dir / "quartet_matrix.pt", map_location="cpu", weights_only=False).to(device)
@@ -298,7 +237,7 @@ def run_qf(
         raise ValueError(
             f"quartet_matrix 长度异常: {quartet_matrix.shape[0]}，预期 {expected_padded_len}"
         )
-
+    
     resolved_attn_weight = Path(attn_weight_path).expanduser() if attn_weight_path else (model_dir / "qf1.pt")
     if not resolved_attn_weight.exists():
         raise FileNotFoundError(f"未找到注意力模型权重: {resolved_attn_weight}")
@@ -308,8 +247,7 @@ def run_qf(
     seq_cuda = torch.from_numpy(seq_tensor).to(device)
 
     local_quartet_template = np.asarray(
-        list(itertools.combinations(range(model_size), 4)),
-        dtype=np.int32,
+        list(itertools.combinations(range(model_size), 4)), dtype=np.int32
     )
 
     agg_quartet_keys = np.empty(0, dtype=np.uint64)
@@ -435,14 +373,10 @@ def run_qf(
         reduced_sums = np.zeros((uniq_keys.size, 3), dtype=np.float64)
         for cls_idx in range(3):
             reduced_sums[:, cls_idx] = np.bincount(
-                inv,
-                weights=merged_sums[:, cls_idx],
-                minlength=uniq_keys.size,
+                inv, weights=merged_sums[:, cls_idx], minlength=uniq_keys.size
             )
         reduced_counts = np.bincount(
-            inv,
-            weights=merged_counts,
-            minlength=uniq_keys.size,
+            inv, weights=merged_counts, minlength=uniq_keys.size
         ).astype(np.int64)
 
         agg_quartet_keys = uniq_keys
@@ -455,18 +389,17 @@ def run_qf(
         pending_entries = 0
 
     print(f"[INFO] 开始批量推断 ({len(blocks)} blocks, BatchSize={infer_batch_size})...")
-
+    
     from tqdm import tqdm
-
+    
     pbar = tqdm(total=len(blocks), desc="[INFO] 批量推断进度")
     for i in range(0, len(blocks), infer_batch_size):
-        batch_blocks = blocks[i: i + infer_batch_size]
+        batch_blocks = blocks[i : i + infer_batch_size]
         actual_bs = len(batch_blocks)
-        batch_pattern_tensors = [] if extension_backend != "cpp_source" else None
-        pattern_batch = None
+        batch_pattern_tensors = []
         batch_quartets_np = []
-
-        for local_idx, block in enumerate(batch_blocks):
+        
+        for block in batch_blocks:
             block_sorted = np.asarray(sorted(block), dtype=np.int32)
             if block_sorted.size == model_size:
                 quartets_np = block_sorted[local_quartet_template]
@@ -477,24 +410,9 @@ def run_qf(
                 )
             batch_quartets_np.append(quartets_np)
             idx_cuda = torch.from_numpy(quartets_np).to(device=device, dtype=torch.long)
-            pattern_tensor = pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_cuda)
-            if extension_backend == "cpp_source":
-                if pattern_batch is None:
-                    pattern_batch = torch.empty(
-                        (actual_bs, pattern_tensor.size(0), pattern_tensor.size(1)),
-                        device=pattern_tensor.device,
-                        dtype=pattern_tensor.dtype,
-                    )
-                # Copy into a fresh batch buffer once to avoid feeding storage
-                # directly derived from the packed native path into the model.
-                pattern_batch[local_idx].copy_(pattern_tensor)
-            else:
-                assert batch_pattern_tensors is not None
-                batch_pattern_tensors.append(pattern_tensor)
-
-        if pattern_batch is None:
-            assert batch_pattern_tensors is not None
-            pattern_batch = torch.stack(batch_pattern_tensors, dim=0)
+            batch_pattern_tensors.append(pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_cuda))
+            
+        pattern_batch = torch.stack(batch_pattern_tensors, dim=0)
         species_batch = species_enc.unsqueeze(0).expand(actual_bs, -1, -1)
         input_batch = torch.cat([species_batch, pattern_batch], dim=2)
         if input_batch.size(1) != expected_valid_len:
@@ -532,9 +450,7 @@ def run_qf(
             batch_sums = np.zeros((uniq_keys.size, 3), dtype=np.float64)
             for cls_idx in range(3):
                 batch_sums[:, cls_idx] = np.bincount(
-                    inv,
-                    weights=weights_flat[:, cls_idx],
-                    minlength=uniq_keys.size,
+                    inv, weights=weights_flat[:, cls_idx], minlength=uniq_keys.size
                 )
             batch_counts = np.bincount(inv, minlength=uniq_keys.size).astype(np.int64)
 
@@ -547,7 +463,6 @@ def run_qf(
         pbar.update(actual_bs)
     pbar.close()
     if skip_aggregation:
-        assert input_handle is not None
         input_handle.close()
         print(
             f"[INFO] 直写统计: quartet_instances={raw_quartet_instances}, "
@@ -556,6 +471,7 @@ def run_qf(
     else:
         _flush_quartet_aggregates()
 
+        # --- 4. 均值化权重并组装初始树 ---
         if agg_quartet_keys.size == 0:
             print("[ERROR] 未生成任何四元组权重")
             return ""
@@ -583,10 +499,12 @@ def run_qf(
         print("[ERROR] 初始组装失败")
         return ""
 
+    # --- 5. 多分叉修复流程 (MLP) ---
     print("[INFO] 正在检查并修复多分叉节点...")
     tree = Tree(str(output_file))
     tree.unroot()
 
+    # 加载 MLP 模型用于修复
     default_mlp_weight = REPO_ROOT / "model" / model_label / "best_mlp_model.pth"
     mlp_weight = Path(mlp_weight_path).expanduser() if mlp_weight_path else default_mlp_weight
     if not mlp_weight.exists():
@@ -607,26 +525,24 @@ def run_qf(
 
         idx_c = torch.tensor(quartets, dtype=torch.long, device=device)
         p_tensor = pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_c)
-
+        
         with torch.no_grad():
             logits = mlp_model(p_tensor)
             probs = torch.softmax(logits, dim=-1).cpu().numpy()
 
         w_map = defaultdict(int)
         for idx, q in enumerate(quartets):
-            ws = [int(round(probs[idx][c] * 100)) for c in range(3)]
-            if max(ws) < 1:
-                ws[np.argmax(probs[idx])] = 1
+            ws = [int(round(probs[idx][c]*100)) for c in range(3)]
+            if max(ws) < 1: ws[np.argmax(probs[idx])] = 1
             q_labels = tuple(_idx_to_label(sp_idx) for sp_idx in q)
             for c, w in enumerate(ws):
                 if w > 0:
                     w_map[_canonical_split_from_class(q_labels, c)] += w
 
-        with open(input_file, "w") as f:
-            for s, w in w_map.items():
-                f.write(f"{s} {w}\n")
+        with open(input_file, 'w') as f:
+            for s, w in w_map.items(): f.write(f"{s} {w}\n")
         _run_quartet_assembler(input_file, output_file)
-
+        
         sub_tree = Tree(str(output_file))
         sub_tree.unroot()
         if outgroup is not None:
@@ -639,8 +555,7 @@ def run_qf(
     iteration = 0
     while True:
         polytomies = find_polytomy_representative_leaves(tree)
-        if not polytomies or iteration > 20:
-            break
+        if not polytomies or iteration > 20: break
         iteration += 1
         poly = polytomies[0]
         target_node, all_reps_raw = poly["node"], poly["representative_leaves"]
@@ -651,7 +566,7 @@ def run_qf(
         if len(all_rep_ids) < 4 or len(child_rep_ids) < 2:
             print(f"[WARN] 多分叉代表叶子存在非法标签，跳过本轮修复: all={all_reps_raw}, child={child_reps_raw}")
             break
-
+        
         rep_to_clade = {}
         for c in target_node.children:
             parsed_ids = _normalize_rep_idx_list(sorted(c.get_leaf_names()))
@@ -669,8 +584,7 @@ def run_qf(
                     raise KeyError(f"引导树叶子 {key!r} 未在目标多分叉子树映射中找到")
                 return rep_to_clade[key]
             new_n = Tree()
-            for ch in g_node.children:
-                new_n.add_child(build_resolved(ch))
+            for ch in g_node.children: new_n.add_child(build_resolved(ch))
             return new_n
 
         for ch in list(target_node.children):
@@ -678,6 +592,7 @@ def run_qf(
         for guide_child in guide.children:
             target_node.add_child(build_resolved(guide_child))
 
+    # --- 6. 完成 ---
     tree.unroot()
     for leaf in tree.iter_leaves():
         idx = _label_to_idx(leaf.name)
@@ -716,9 +631,7 @@ def _normalize_output_path(output_tree_path, phy_path):
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Run the server_bin inference flow with selectable native extension backend."
-    )
+    parser = argparse.ArgumentParser(description="Run server_bin dense pipeline in current repository.")
     parser.add_argument("--phy", required=True, help="Input alignment file path (PHY format)")
     parser.add_argument("--out", required=True, help="Output tree path")
     parser.add_argument(
@@ -740,12 +653,6 @@ def main(argv=None) -> int:
         action="store_true",
         help="Skip quartet dedup/averaging and write every predicted quartet split directly to assembler input",
     )
-    parser.add_argument(
-        "--extension-backend",
-        choices=["cpp_source", "server_bin"],
-        default="cpp_source",
-        help="Select native sequence/pattern operator backend",
-    )
     args = parser.parse_args(argv)
 
     ref_tree_path = args.ref_tree if args.ref_tree else None
@@ -762,7 +669,6 @@ def main(argv=None) -> int:
         ref_tree_path=ref_tree_path,
         metric=args.metric,
         skip_aggregation=args.skip_aggregation,
-        extension_backend=args.extension_backend,
     )
     if ref_tree_path:
         tree_path, metric_value = result
