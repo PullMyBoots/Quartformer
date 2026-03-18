@@ -3,7 +3,6 @@ import importlib.util
 import itertools
 import subprocess
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -16,8 +15,8 @@ BACKEND_DIR = REPO_ROOT / "backend"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from model import QuartFormer, MLP
-from utils import _canonical_split_from_class, find_polytomy_representative_leaves
+from model import QuartFormer
+from utils import find_polytomy_representative_leaves
 
 
 def _load_extension(module_name: str, so_path: Path):
@@ -85,7 +84,6 @@ def run_qf(
     run_mode: str = "regular",
     infer_batch_size=32,
     attn_weight_path=None,
-    mlp_weight_path=None,
     ref_tree_path=None,
     metric: str = "rf",
     skip_aggregation: bool = False,
@@ -95,10 +93,9 @@ def run_qf(
     - 仅支持物种数 >= 24。
     - 引入推断 Batching。
     - 对重复四元组权重进行均值化处理。
-    - 新增：自动化多分叉修复流程（使用 MLP）。
-    - 模型类型（gene / multilocus）由 attn_weight_path 或 mlp_weight_path 自动推断。
+    - 新增：自动化多分叉修复流程（使用 QuartFormer 24 taxa 子问题）。
+    - 模型类型（gene / multilocus）由 attn_weight_path 自动推断。
     - attn_weight_path: 注意力模型权重路径。
-    - mlp_weight_path: MLP 权重路径；若未提供，则根据推断出的模型类型选择默认路径。
     - run_mode:
         fast: 仅保留每个 quartet 的 top1 拓扑权重（更快，可能略降精度）
         regular: 保留 3 个拓扑权重
@@ -127,10 +124,10 @@ def run_qf(
         if not families:
             return default_task_type
         if len(families) > 1:
-            raise ValueError(f"attn_weight_path 与 mlp_weight_path 指向了不同模型类型: {families}")
+            raise ValueError(f"检测到多个冲突的模型类型标签: {families}")
         return families[0]
 
-    model_label = _infer_model_label(task_type, attn_weight_path, mlp_weight_path)
+    model_label = _infer_model_label(task_type, attn_weight_path)
 
     def _model_dir(species_for_model: int) -> Path:
         return REPO_ROOT / "model" / model_label / str(species_for_model)
@@ -300,7 +297,7 @@ def run_qf(
     pending_entries = 0
     shm_dir = Path("/dev/shm")
     if selected_assembler == "tree-qmc" and shm_dir.exists() and shm_dir.is_dir():
-        result_dir = shm_dir / "publish_code_qf2_result"
+        result_dir = shm_dir / "publish_code_qf3_result"
     else:
         result_dir = REPO_ROOT / "temp" / "result"
     result_dir.mkdir(parents=True, exist_ok=True)
@@ -538,63 +535,95 @@ def run_qf(
         print("[ERROR] 初始组装失败")
         return ""
 
-    # --- 5. 多分叉修复流程 (MLP) ---
-    print("[INFO] 正在检查并修复多分叉节点...")
-    tree = Tree(str(output_file))
-    tree.unroot()
+    def _infer_tree_with_quartformer(selected_taxa_ids: list[int]) -> Tree:
+        if len(selected_taxa_ids) != model_size:
+            raise ValueError(f"QuartFormer 修复要求固定 {model_size} 个物种，实际为 {len(selected_taxa_ids)}")
 
-    # 加载 MLP 模型用于修复
-    default_mlp_weight = REPO_ROOT / "model" / model_label / "best_mlp_model.pth"
-    mlp_weight = Path(mlp_weight_path).expanduser() if mlp_weight_path else default_mlp_weight
-    if not mlp_weight.exists():
-        raise FileNotFoundError(f"未找到 MLP 权重: {mlp_weight}")
-    mlp_model = MLP().to(device)
-    mlp_model.load_state_dict(torch.load(mlp_weight, map_location=device, weights_only=False))
-    mlp_model.eval()
+        taxa_np = np.asarray(sorted(selected_taxa_ids), dtype=np.int32)
+        quartets_np = taxa_np[local_quartet_template]
+        idx_cuda = torch.as_tensor(quartets_np, device=device, dtype=torch.long)
+        pattern_batch = pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_cuda).view(
+            1, local_quartet_count, -1
+        )
 
-    def _infer_subtree_with_mlp(all_rep_ids, child_rep_ids):
-        outgroup = sorted(set(all_rep_ids) - set(child_rep_ids))[0] if len(all_rep_ids) > len(child_rep_ids) else None
-        quartets = list(itertools.combinations(all_rep_ids, 4))
-        if not quartets:
-            t = Tree()
-            for sp_idx in child_rep_ids:
-                t.add_child(name=_idx_to_label(sp_idx))
-            t.unroot()
-            return t
+        species_batch = species_enc.unsqueeze(0)
+        input_batch = torch.cat([species_batch, pattern_batch], dim=2)
+        if input_batch.size(1) != expected_valid_len:
+            raise ValueError(
+                f"修复阶段 input_batch 长度异常: {input_batch.size(1)}，预期 {expected_valid_len}"
+            )
 
-        idx_c = torch.tensor(quartets, dtype=torch.long, device=device)
-        p_tensor = pattern_freq_cuda.compute_pattern_frequencies_cuda(seq_cuda, idx_c)
-        
+        input_batch_for_model = torch.cat(
+            [input_batch, input_batch.new_zeros((1, pad_len, input_batch.size(2)))],
+            dim=1,
+        )
+        canonical_input_batch = torch.empty_like(input_batch_for_model)
+        canonical_input_batch.copy_(input_batch_for_model)
+
         with torch.no_grad():
-            logits = mlp_model(p_tensor)
-            probs = torch.softmax(logits, dim=-1).cpu().numpy()
+            logits = attn_model(canonical_input_batch, coeff_blocks, quartet_matrix)
+            logits = logits[:, :expected_valid_len, :]
+            probs = torch.softmax(logits, dim=-1)
+            if run_mode_key == "fast":
+                top_idx = torch.argmax(probs, dim=-1, keepdim=True)
+                top_prob = torch.gather(probs, dim=-1, index=top_idx)
+                probs = torch.zeros_like(probs).scatter_(dim=-1, index=top_idx, src=top_prob)
+            weights_int = np.rint((probs * 100.0).cpu().numpy().reshape(-1, 3)).astype(np.int32)
 
-        w_map = defaultdict(int)
-        for idx, q in enumerate(quartets):
-            ws = [int(round(probs[idx][c]*100)) for c in range(3)]
-            if max(ws) < 1: ws[np.argmax(probs[idx])] = 1
-            q_labels = tuple(_idx_to_label(sp_idx) for sp_idx in q)
-            for c, w in enumerate(ws):
-                if w > 0:
-                    w_map[_canonical_split_from_class(q_labels, c)] += w
+        split_keys, split_weights = _quartets_weights_to_splits(quartets_np, weights_int)
+        if split_keys.size == 0:
+            raise RuntimeError("修复阶段未生成任何 quartet split")
 
-        with open(input_file, 'w') as f:
-            for s, w in w_map.items(): f.write(f"{s} {w}\n")
-        _run_quartet_assembler(input_file, output_file)
-        
-        sub_tree = Tree(str(output_file))
-        sub_tree.unroot()
+        with open(input_file, "w", buffering=16 * 1024 * 1024) as f:
+            _append_split_lines(f, split_keys, split_weights)
+        if not _run_quartet_assembler(
+            input_file,
+            output_file,
+            qmc_compact_format=(selected_assembler == "tree-qmc"),
+        ):
+            raise RuntimeError("修复阶段 quartet assembler 执行失败")
+
+        inferred_tree = Tree(str(output_file))
+        inferred_tree.unroot()
+        return inferred_tree
+
+    def _infer_subtree_with_quartformer(all_rep_ids: list[int], child_rep_ids: list[int]) -> Tree:
+        if len(all_rep_ids) > model_size:
+            raise ValueError(
+                f"多分叉代表叶数量 {len(all_rep_ids)} 超过 QuartFormer 修复上限 {model_size}"
+            )
+
+        # Deterministically pad the repair problem to 24 taxa with leaves outside the polytomy.
+        all_rep_set = set(all_rep_ids)
+        filler_ids = [
+            idx for idx in range(num_species)
+            if idx not in all_rep_set
+        ][: model_size - len(all_rep_ids)]
+        selected_taxa_ids = list(all_rep_ids) + filler_ids
+        if len(selected_taxa_ids) != model_size:
+            raise ValueError(
+                f"无法为多分叉修复补足到 {model_size} 个物种，当前仅有 {len(selected_taxa_ids)} 个"
+            )
+
+        outgroup = sorted(set(all_rep_ids) - set(child_rep_ids))[0] if len(all_rep_ids) > len(child_rep_ids) else None
+        sub_tree = _infer_tree_with_quartformer(selected_taxa_ids)
         if outgroup is not None:
             out_label = _idx_to_label(outgroup)
             if out_label in sub_tree.get_leaf_names():
                 sub_tree.set_outgroup(out_label)
         sub_tree.prune([_idx_to_label(i) for i in child_rep_ids], preserve_branch_length=False)
+        # Keep the rooted guide shape after pruning so a 3-way ingroup stays resolved.
         return sub_tree
+
+    # --- 5. 多分叉修复流程 (QuartFormer) ---
+    print("[INFO] 正在检查并修复多分叉节点...")
+    tree = Tree(str(output_file))
+    tree.unroot()
 
     iteration = 0
     while True:
         polytomies = find_polytomy_representative_leaves(tree)
-        if not polytomies or iteration > 200: break
+        if not polytomies or iteration > 20: break
         iteration += 1
         poly = polytomies[0]
         target_node, all_reps_raw = poly["node"], poly["representative_leaves"]
@@ -605,13 +634,18 @@ def run_qf(
         if len(all_rep_ids) < 4 or len(child_rep_ids) < 2:
             print(f"[WARN] 多分叉代表叶子存在非法标签，跳过本轮修复: all={all_reps_raw}, child={child_reps_raw}")
             break
+        if len(all_rep_ids) > model_size:
+            print(
+                f"[WARN] 多分叉代表叶数量达到 {len(all_rep_ids)}，当前 QuartFormer 修复仅处理 <= {model_size} 的情况，跳过本轮"
+            )
+            break
         
         rep_to_clade = {}
         for c in target_node.children:
             parsed_ids = _normalize_rep_idx_list(sorted(c.get_leaf_names()))
             if parsed_ids:
                 rep_to_clade[_idx_to_label(parsed_ids[0])] = c
-        guide = _infer_subtree_with_mlp(all_rep_ids, child_rep_ids)
+        guide = _infer_subtree_with_quartformer(all_rep_ids, child_rep_ids)
 
         def build_resolved(g_node):
             if g_node.is_leaf():
@@ -660,10 +694,10 @@ def run_qf(
 def _normalize_output_path(output_tree_path, phy_path):
     output_tree_path = Path(output_tree_path)
     if output_tree_path.exists() and output_tree_path.is_dir():
-        output_tree_path = output_tree_path / f"{phy_path.stem}.qf2.nwk"
+        output_tree_path = output_tree_path / f"{phy_path.stem}.qf3.nwk"
     elif output_tree_path.suffix == "":
         output_tree_path.mkdir(parents=True, exist_ok=True)
-        output_tree_path = output_tree_path / f"{phy_path.stem}.qf2.nwk"
+        output_tree_path = output_tree_path / f"{phy_path.stem}.qf3.nwk"
     else:
         output_tree_path.parent.mkdir(parents=True, exist_ok=True)
     return output_tree_path
@@ -683,7 +717,6 @@ def main(argv=None) -> int:
     parser.add_argument("--run-mode", choices=["fast", "regular"], default="regular")
     parser.add_argument("--infer-batch-size", type=int, default=32)
     parser.add_argument("--attn-weight-path", default=None, help="Optional attention model weight path")
-    parser.add_argument("--mlp-weight-path", default=None, help="Optional MLP weight path")
     parser.add_argument("--ref-tree", default="", help="Optional reference tree path")
     parser.add_argument("--metric", choices=["rf", "quartet"], default="rf")
     parser.add_argument("--no-cleanup-temp-files", action="store_true")
@@ -704,7 +737,6 @@ def main(argv=None) -> int:
         run_mode=args.run_mode,
         infer_batch_size=args.infer_batch_size,
         attn_weight_path=args.attn_weight_path,
-        mlp_weight_path=args.mlp_weight_path,
         ref_tree_path=ref_tree_path,
         metric=args.metric,
         skip_aggregation=args.skip_aggregation,

@@ -16,14 +16,15 @@ import time
 # 数据集目录
 DATA_DIR = Path("/mnt/c/Users/descfly/Desktop/publish_code/data/ml_rf_real")
 
-# run_qf.py 脚本路径
+# 推断脚本路径
 RUN_QF_SCRIPT = Path("/mnt/c/Users/descfly/Desktop/publish_code/run_qf.py")
 
 # 运行参数 (直接写死)
-RUN_MODE = "regular"          # "fast" 或 "regular"
+RUN_MODE = "extra_fast"          # "fast" 或 "regular" 或 "slow"
 INFER_BATCH_SIZE = 32
 K_PARAM = 3.0
 TASK_TYPE = "heterogeneous"     # "homogeneous" 或 "heterogeneous"
+COMPUTE_BRANCH_SUPPORT = False  # True 时额外输出支持度树与支持度表
 
 # 是否并行运行 (1 为串行，>1 为并行)
 MAX_WORKERS = 1
@@ -56,6 +57,8 @@ def run_single_test(data_subdir: Path) -> dict:
         "--k-param", str(K_PARAM),
         "--task-type", TASK_TYPE,
     ]
+    if COMPUTE_BRANCH_SUPPORT:
+        cmd.append("--compute-branch-support")
 
     print(f"\n{'='*60}")
     print(f"[INFO] Processing: {dataset_name}")
@@ -111,6 +114,10 @@ def run_single_test(data_subdir: Path) -> dict:
 
 
 def main():
+    if not RUN_QF_SCRIPT.exists():
+        print(f"[ERROR] 未找到推断脚本: {RUN_QF_SCRIPT}")
+        return 1
+
     # 查找所有数据集
     datasets = sorted([d for d in DATA_DIR.iterdir() if d.is_dir()])
 
@@ -119,9 +126,12 @@ def main():
         return 1
 
     print(f"[INFO] 找到 {len(datasets)} 个数据集: {[d.name for d in datasets]}")
-    print(f"[INFO] run_qf.py 路径: {RUN_QF_SCRIPT}")
+    print(f"[INFO] 推断脚本路径: {RUN_QF_SCRIPT}")
     print(f"[INFO] 数据目录: {DATA_DIR}")
-    print(f"[INFO] 运行参数: run_mode={RUN_MODE}, batch_size={INFER_BATCH_SIZE}, k={K_PARAM}, task_type={TASK_TYPE}")
+    print(
+        f"[INFO] 运行参数: run_mode={RUN_MODE}, batch_size={INFER_BATCH_SIZE}, "
+        f"k={K_PARAM}, task_type={TASK_TYPE}, compute_branch_support={COMPUTE_BRANCH_SUPPORT}"
+    )
 
     # 运行测试
     results = []

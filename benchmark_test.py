@@ -22,11 +22,12 @@ from run_qf import run_qf
 def run_benchmark(
     species_list=None,
     dna_len_list=None,
-    task_type="gene",
+    task_type="heterogeneous",
     k_param=3.0,
     run_mode="regular",
     infer_batch_size=32,
     cleanup=True,
+    compute_branch_support=False,
     output_csv="output/benchmark_results.csv"
 ):
     """
@@ -35,11 +36,12 @@ def run_benchmark(
     参数:
         species_list: 要测试的物种数列表，如 [24, 48, 96]
         dna_len_list: 要测试的DNA长度列表，如 [100000, 1000000]
-        task_type: 任务类型，"multilocus" 或 "gene"
+        task_type: 任务类型，"homogeneous" 或 "heterogeneous"
         k_param: k参数，用于block采样
-        run_mode: "fast" 或 "regular"
+        run_mode: "fast"、"regular" 或 "slow"
         infer_batch_size: 推断批次大小
         cleanup: 是否清理临时文件
+        compute_branch_support: 是否计算分枝支持度
         output_csv: 结果CSV输出路径
     """
     if species_list is None:
@@ -66,6 +68,7 @@ def run_benchmark(
                 "k_param",
                 "run_mode",
                 "infer_batch_size",
+                "compute_branch_support",
                 "time_s",
                 "output_tree",
                 "status"
@@ -86,6 +89,7 @@ def run_benchmark(
     print(f"  k参数: {k_param}")
     print(f"  运行模式: {run_mode}")
     print(f"  推理批次大小: {infer_batch_size}")
+    print(f"  计算支持度: {compute_branch_support}")
     print(f"  总测试数: {total_tests}")
     print("=" * 80)
     print()
@@ -106,7 +110,7 @@ def run_benchmark(
                     writer = csv.writer(f)
                     writer.writerow([
                         species_num, dna_len, task_type, k_param, run_mode,
-                        infer_batch_size, 0, "", "SKIP_FILE_NOT_FOUND"
+                        infer_batch_size, compute_branch_support, 0, "", "SKIP_FILE_NOT_FOUND"
                     ])
                 failed += 1
                 continue
@@ -127,6 +131,7 @@ def run_benchmark(
                     cleanup_temp_files=cleanup,
                     run_mode=run_mode,
                     infer_batch_size=infer_batch_size,
+                    compute_branch_support=compute_branch_support,
                 )
 
                 elapsed = time.perf_counter() - t0
@@ -154,7 +159,7 @@ def run_benchmark(
                 writer = csv.writer(f)
                 writer.writerow([
                     species_num, dna_len, task_type, k_param, run_mode,
-                    infer_batch_size, f"{elapsed:.3f}", result_tree, status
+                    infer_batch_size, compute_branch_support, f"{elapsed:.3f}", result_tree, status
                 ])
 
     # 打印总结
@@ -175,14 +180,14 @@ if __name__ == "__main__":
     # ==================== 配置参数（在此修改）====================
 
     # 要测试的物种数列表
-    SPECIES_LIST = [24, 48, 96, 192, 320, 512]
+    SPECIES_LIST = [768, 1024]
 
     # 要测试的DNA长度列表
-    DNA_LEN_LIST = [10000000, 1000000, 100000]
+    DNA_LEN_LIST = [100000]
 
-    # 运行模式: "fast" (只保留top1) 或 "regular" (保留全部拓扑)
-    RUN_MODE = "regular"
-
+    # 运行模式: "fast"、"regular" 或 "slow"
+    RUN_MODE = "extra_fast"
+ 
     # 任务类型: "heterogeneous" 或 "homogeneous"
     TASK_TYPE = "homogeneous"
 
@@ -194,6 +199,9 @@ if __name__ == "__main__":
 
     # 是否清理临时文件
     CLEANUP = True
+
+    # 是否计算分枝支持度
+    COMPUTE_BRANCH_SUPPORT = False
 
     # 结果输出路径
     OUTPUT_CSV = "benchmark_results.csv"
@@ -208,6 +216,7 @@ if __name__ == "__main__":
         run_mode=RUN_MODE,
         infer_batch_size=INFER_BATCH_SIZE,
         cleanup=CLEANUP,
+        compute_branch_support=COMPUTE_BRANCH_SUPPORT,
         output_csv=OUTPUT_CSV
     )
 
