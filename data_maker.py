@@ -571,8 +571,8 @@ if __name__ == "__main__":
     
     for species_num in [768, 1024]:
         path = f"/mnt/c/Users/descfly/Desktop/publish_code/data/{species_num}"
-        simulate_phylogeny(path=path, species_num=species_num, tree_num=1, root=False, append_mode=True)
-        for dna_length in [100000]:
+        # simulate_phylogeny(path=path, species_num=species_num, tree_num=1, root=False, append_mode=True)
+        for dna_length in [1000000, 10000000]:
             execute_alisim(insert_delet=False, tree_set_path=path, evolution_model='GTR', mode="single", tree_num=1, dna_length=dna_length, append_mode=True)
 
      

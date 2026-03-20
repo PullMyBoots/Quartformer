@@ -1,0 +1,2 @@
+Main-Class: qfm_fi.FastMain
+Class-Path: ../../qfm_java/QFM-FI_unzipped/QFM-FI.jar

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""批量测试脚本：可选择运行一个脚本，或运行全部脚本做对照。"""
+"""批量测试脚本：固定调用 infer_tree.py 进行精度评估。"""
 
 import subprocess
 import sys
@@ -14,40 +14,23 @@ from typing import Any
 # 数据集目录
 DATA_DIR = Path("/mnt/c/Users/descfly/Desktop/publish_code/data/ml_rf_real")
 
-# 对照脚本路径
-RUN_QF_V2_SCRIPT = Path("/mnt/c/Users/descfly/Desktop/publish_code/run_qf_v2.py")
-RUN_QF_BASE_SCRIPT = Path("/mnt/c/Users/descfly/Desktop/publish_code/run_qf.py")
-RUN_QF_FAST_SCRIPT = Path("/mnt/c/Users/descfly/Desktop/publish_code/run_qf_fastaggregate.py")
-SCRIPT_MAP = {
-    "v2": RUN_QF_V2_SCRIPT,
-    "base": RUN_QF_BASE_SCRIPT,
-    "fastagg": RUN_QF_FAST_SCRIPT,
-}
-SCRIPT_VARIANTS = [
-    ("v2", RUN_QF_V2_SCRIPT),
-    ("base", RUN_QF_BASE_SCRIPT),
-    ("fastagg", RUN_QF_FAST_SCRIPT),
-]
-# 选择要测试的脚本: "v2" / "base" / "fastagg" / "all"
-SELECT_SCRIPT = "all"
+# 推断脚本路径
+RUN_QF_INFER_SCRIPT = Path("/mnt/c/Users/descfly/Desktop/publish_code/infer_tree.py")
 
 # 运行参数 (直接写死)
-RUN_MODE = "fast"          # "fast" 或 "regular" 或 "slow"
 INFER_BATCH_SIZE = 32
-K_PARAM = 3.0
 TASK_TYPE = "homogeneous"     # "homogeneous" 或 "heterogeneous"
 COMPUTE_BRANCH_SUPPORT = False  # True 时额外输出支持度树与支持度表
-AGGREGATE_MODE = "full"          # "full" / "batch_only" / "off"
-
-# 是否并行运行 (1 为串行，>1 为并行)
-MAX_WORKERS = 1
+CONFIG_PATH = Path("/mnt/c/Users/descfly/Desktop/publish_code/infer_config.jsonc")
+# 细粒度参数由 infer_config.jsonc 控制（如 quartet_assembler、qmc_iter_limit、aggregate_mode）
 
 # ============================================================
 
 
-def run_single_test(data_subdir: Path, script_name: str, script_path: Path) -> dict[str, Any]:
-    """对单个数据集、单个脚本运行推断并计算 RF 距离。"""
+def run_single_test(data_subdir: Path, script_path: Path) -> dict[str, Any]:
+    """对单个数据集运行推断并计算 RF 距离。"""
     dataset_name = data_subdir.name
+    script_name = "infer"
     msa_path = data_subdir / "MSA.phy"
     ref_tree_path = data_subdir / "tree_best.newick"
     output_path = data_subdir / f"test_output_{dataset_name}.{script_name}.nwk"
@@ -75,15 +58,12 @@ def run_single_test(data_subdir: Path, script_name: str, script_path: Path) -> d
         str(script_path),
         "--phy", str(msa_path),
         "--out", str(output_path),
+        "--config", str(CONFIG_PATH),
         "--ref-tree", str(ref_tree_path),
         "--metric", "rf",
-        "--run-mode", RUN_MODE,
         "--infer-batch-size", str(INFER_BATCH_SIZE),
-        "--k-param", str(K_PARAM),
         "--task-type", TASK_TYPE,
     ]
-    if script_name == "fastagg":
-        cmd.extend(["--aggregate-mode", AGGREGATE_MODE])
     if COMPUTE_BRANCH_SUPPORT:
         cmd.append("--compute-branch-support")
 
@@ -152,18 +132,13 @@ def run_single_test(data_subdir: Path, script_name: str, script_path: Path) -> d
 
 
 def main():
-    if SELECT_SCRIPT == "all":
-        selected_variants = SCRIPT_VARIANTS
-    else:
-        if SELECT_SCRIPT not in SCRIPT_MAP:
-            print(f"[ERROR] SELECT_SCRIPT 无效: {SELECT_SCRIPT}，可选值: v2/base/fastagg/all")
-            return 1
-        selected_variants = [(SELECT_SCRIPT, SCRIPT_MAP[SELECT_SCRIPT])]
+    if not CONFIG_PATH.exists():
+        print(f"[ERROR] 未找到配置文件: {CONFIG_PATH}")
+        return 1
 
-    for script_name, script_path in selected_variants:
-        if not script_path.exists():
-            print(f"[ERROR] 未找到推断脚本({script_name}): {script_path}")
-            return 1
+    if not RUN_QF_INFER_SCRIPT.exists():
+        print(f"[ERROR] 未找到推断脚本: {RUN_QF_INFER_SCRIPT}")
+        return 1
 
     # 查找所有数据集
     datasets = sorted([d for d in DATA_DIR.iterdir() if d.is_dir()])
@@ -173,22 +148,18 @@ def main():
         return 1
 
     print(f"[INFO] 找到 {len(datasets)} 个数据集: {[d.name for d in datasets]}")
-    print(f"[INFO] 选择脚本: {SELECT_SCRIPT}")
-    print("[INFO] 实际运行脚本:")
-    for script_name, script_path in selected_variants:
-        print(f"  - {script_name}: {script_path}")
+    print(f"[INFO] 推断脚本: {RUN_QF_INFER_SCRIPT}")
     print(f"[INFO] 数据目录: {DATA_DIR}")
     print(
-        f"[INFO] 运行参数: run_mode={RUN_MODE}, batch_size={INFER_BATCH_SIZE}, "
-        f"k={K_PARAM}, task_type={TASK_TYPE}, aggregate_mode={AGGREGATE_MODE}, "
+        f"[INFO] 运行参数: config={CONFIG_PATH}, batch_size={INFER_BATCH_SIZE}, "
+        f"task_type={TASK_TYPE}, "
         f"compute_branch_support={COMPUTE_BRANCH_SUPPORT}"
     )
 
     # 运行测试
     results = []
     for d in datasets:
-        for script_name, script_path in selected_variants:
-            results.append(run_single_test(d, script_name, script_path))
+        results.append(run_single_test(d, RUN_QF_INFER_SCRIPT))
 
     # 打印汇总结果
     print("\n" + "="*70)
@@ -224,9 +195,6 @@ def main():
                 print(f"  -> Error: {error[:100]}")
 
     print("-"*70)
-
-    if SELECT_SCRIPT == "all":
-        print("\n[INFO] 已完成 all 模式：若需脚本间树差异对照，请使用旧版对照脚本或后续再加 compare 选项。")
 
     if rf_values:
         avg_rf = sum(rf_values) / len(rf_values)

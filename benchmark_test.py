@@ -6,29 +6,49 @@ QF2 性能基准测试脚本
 import sys
 import time
 import csv
+import os
+import re
 from pathlib import Path
 
-# 添加 cpp_source 相关目录到模块搜索路径
-cpp_source_path = Path(__file__).parent / "cpp_source"
-if str(cpp_source_path) not in sys.path:
-    sys.path.insert(0, str(cpp_source_path))
-cuda_pattern_path = cpp_source_path / "cuda13_pattern_freq"
-if str(cuda_pattern_path) not in sys.path:
-    sys.path.insert(0, str(cuda_pattern_path))
+from infer_tree import run_qf
 
-from run_qf import run_qf
+
+def _load_config_ranges(config_dir: Path) -> list[tuple[int, int, Path]]:
+    ranges: list[tuple[int, int, Path]] = []
+    if not config_dir.exists():
+        return ranges
+    for p in sorted(config_dir.glob("*.jsonc")):
+        m = re.fullmatch(r"(\d+)\s*~\s*(\d+)\.jsonc", p.name)
+        if not m:
+            continue
+        lo = int(m.group(1))
+        hi = int(m.group(2))
+        if lo > hi:
+            lo, hi = hi, lo
+        ranges.append((lo, hi, p))
+    return ranges
+
+
+def _select_config_for_species(
+    species_num: int,
+    config_ranges: list[tuple[int, int, Path]],
+    fallback_config: Path,
+) -> Path:
+    for lo, hi, cfg in config_ranges:
+        if lo <= species_num <= hi:
+            return cfg
+    return fallback_config
 
 
 def run_benchmark(
     species_list=None,
     dna_len_list=None,
     task_type="heterogeneous",
-    k_param=3.0,
-    run_mode="regular",
     infer_batch_size=32,
-    cleanup=True,
     compute_branch_support=False,
-    output_csv="output/benchmark_results.csv"
+    output_csv="output/benchmark_results.csv",
+    config_path="infer_config.jsonc",
+    config_dir="config_benchmark",
 ):
     """
     运行性能基准测试
@@ -37,12 +57,11 @@ def run_benchmark(
         species_list: 要测试的物种数列表，如 [24, 48, 96]
         dna_len_list: 要测试的DNA长度列表，如 [100000, 1000000]
         task_type: 任务类型，"homogeneous" 或 "heterogeneous"
-        k_param: k参数，用于block采样
-        run_mode: "fast"、"regular" 或 "slow"
         infer_batch_size: 推断批次大小
-        cleanup: 是否清理临时文件
         compute_branch_support: 是否计算分枝支持度
         output_csv: 结果CSV输出路径
+        config_path: infer_tree 默认配置 JSONC 路径（区间未命中时使用）
+        config_dir: 区间配置目录，文件名格式为 <min>~<max>.jsonc
     """
     if species_list is None:
         species_list = [24, 48, 96, 192]
@@ -56,6 +75,8 @@ def run_benchmark(
     # 初始化CSV文件
     csv_path = Path(output_csv)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+    fallback_config = Path(config_path).resolve()
+    config_ranges = _load_config_ranges(Path(config_dir).resolve())
 
     file_exists = csv_path.exists()
     with open(csv_path, "a", newline="") as f:
@@ -65,10 +86,9 @@ def run_benchmark(
                 "species",
                 "dna_len",
                 "task_type",
-                "k_param",
-                "run_mode",
                 "infer_batch_size",
                 "compute_branch_support",
+                "config_file",
                 "time_s",
                 "output_tree",
                 "status"
@@ -86,10 +106,16 @@ def run_benchmark(
     print(f"  物种数: {species_list}")
     print(f"  DNA长度: {dna_len_list}")
     print(f"  任务类型: {task_type}")
-    print(f"  k参数: {k_param}")
-    print(f"  运行模式: {run_mode}")
     print(f"  推理批次大小: {infer_batch_size}")
     print(f"  计算支持度: {compute_branch_support}")
+    print(f"  默认配置: {fallback_config}")
+    print(f"  分段配置目录: {Path(config_dir).resolve()}")
+    if config_ranges:
+        print("  已识别配置区间:")
+        for lo, hi, cfg in config_ranges:
+            print(f"    - {lo}~{hi}: {cfg}")
+    else:
+        print("  [WARN] 未识别到区间配置，将统一使用默认配置")
     print(f"  总测试数: {total_tests}")
     print("=" * 80)
     print()
@@ -104,32 +130,47 @@ def run_benchmark(
 
             # 检查输入文件是否存在
             phy_path = Path(f"data/{species_num}/0/GTR_{dna_len}_MSA.phy")
+            selected_config = _select_config_for_species(
+                species_num=species_num,
+                config_ranges=config_ranges,
+                fallback_config=fallback_config,
+            )
+            if not selected_config.exists():
+                print(f"[SKIP] 配置文件不存在: {selected_config}")
+                with open(csv_path, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        species_num, dna_len, task_type,
+                        infer_batch_size, compute_branch_support,
+                        str(selected_config), 0, "", "SKIP_CONFIG_NOT_FOUND"
+                    ])
+                failed += 1
+                continue
             if not phy_path.exists():
                 print(f"[SKIP] 输入文件不存在: {phy_path}")
                 with open(csv_path, "a", newline="") as f:
                     writer = csv.writer(f)
                     writer.writerow([
-                        species_num, dna_len, task_type, k_param, run_mode,
-                        infer_batch_size, compute_branch_support, 0, "", "SKIP_FILE_NOT_FOUND"
+                        species_num, dna_len, task_type,
+                        infer_batch_size, compute_branch_support,
+                        str(selected_config), 0, "", "SKIP_FILE_NOT_FOUND"
                     ])
                 failed += 1
                 continue
 
             # 输出树路径
-            out_path = f"output/benchmark_tree_{species_num}_{dna_len}_{run_mode}.nwk"
+            out_path = f"output/benchmark_tree_{species_num}_{dna_len}.nwk"
 
             # 运行测试
             try:
-                print(f"[INFO] 开始推断...")
+                print(f"[INFO] 开始推断... 使用配置: {selected_config}")
                 t0 = time.perf_counter()
+                os.environ["QF_INFER_CONFIG"] = str(selected_config)
 
                 result_tree = run_qf(
                     phy_path=str(phy_path),
                     output_tree_path=out_path,
                     task_type=task_type,
-                    k_param=k_param,
-                    cleanup_temp_files=cleanup,
-                    run_mode=run_mode,
                     infer_batch_size=infer_batch_size,
                     compute_branch_support=compute_branch_support,
                 )
@@ -158,8 +199,9 @@ def run_benchmark(
             with open(csv_path, "a", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow([
-                    species_num, dna_len, task_type, k_param, run_mode,
-                    infer_batch_size, compute_branch_support, f"{elapsed:.3f}", result_tree, status
+                    species_num, dna_len, task_type,
+                    infer_batch_size, compute_branch_support,
+                    str(selected_config), f"{elapsed:.3f}", result_tree, status
                 ])
 
     # 打印总结
@@ -180,28 +222,24 @@ if __name__ == "__main__":
     # ==================== 配置参数（在此修改）====================
 
     # 要测试的物种数列表
-    SPECIES_LIST = [768, 1024]
+    SPECIES_LIST = [1024]
 
     # 要测试的DNA长度列表
     DNA_LEN_LIST = [100000]
 
-    # 运行模式: "fast"、"regular" 或 "slow"
-    RUN_MODE = "extra_fast"
- 
     # 任务类型: "heterogeneous" 或 "homogeneous"
     TASK_TYPE = "homogeneous"
 
-    # k参数（用于block采样）
-    K_PARAM = 3
-
     # 推断批次大小
-    INFER_BATCH_SIZE = 16
-
-    # 是否清理临时文件
-    CLEANUP = True
+    INFER_BATCH_SIZE = 8
 
     # 是否计算分枝支持度
     COMPUTE_BRANCH_SUPPORT = False
+
+    # 默认细粒度参数（quartet_assembler/qmc_iter_limit/k_param/aggregate_mode等）
+    # 请修改 infer_config.jsonc；分段覆盖请修改 config_benchmark/*.jsonc
+    CONFIG_PATH = "infer_config.jsonc"
+    CONFIG_DIR = "config_benchmark"
 
     # 结果输出路径
     OUTPUT_CSV = "benchmark_results.csv"
@@ -212,12 +250,11 @@ if __name__ == "__main__":
         species_list=SPECIES_LIST,
         dna_len_list=DNA_LEN_LIST,
         task_type=TASK_TYPE,
-        k_param=K_PARAM,
-        run_mode=RUN_MODE,
         infer_batch_size=INFER_BATCH_SIZE,
-        cleanup=CLEANUP,
         compute_branch_support=COMPUTE_BRANCH_SUPPORT,
-        output_csv=OUTPUT_CSV
+        output_csv=OUTPUT_CSV,
+        config_path=CONFIG_PATH,
+        config_dir=CONFIG_DIR,
     )
 
 

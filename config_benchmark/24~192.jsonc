@@ -1,0 +1,19 @@
+{
+  // Quartet block sampling parameter.
+  "k_param": 3.0,
+
+  // Quartet tree assembler:
+  // qfm: use QFM-FI-fast.jar
+  // qmc: use TREE-QMC_fast tree-qmc binary
+  "quartet_assembler": "qmc",
+
+  // Iteration limit for qmc assembler (--iterlimit).
+  // Only used when quartet_assembler == "qmc".
+  "qmc_iter_limit": 10,
+  
+  // Quartet aggregation strategy:
+  // full: global reduce
+  // batch_only: per-batch reduce only
+  // off: no reduce
+  "aggregate_mode": "full"
+}

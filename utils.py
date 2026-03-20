@@ -2,6 +2,7 @@
 from pathlib import Path
 from ete3 import Tree
 import itertools
+import math
 import numpy as np
 
 
@@ -140,21 +141,40 @@ def compute_tree_difference(tree_path1, tree_path2, mode: str = "rf", max_quarte
                 mismatch_examples = []
 
                 if len(common_leaves) >= 4:
-                    # Determine number of quartets to sample
-                    all_quartets = list(itertools.combinations(common_leaves, 4))
-                    total_possible = len(all_quartets)
+                    n = len(common_leaves)
+                    total_possible = math.comb(n, 4)
 
                     # If common_leaves > 96 and max_quartets not specified, default to 10000
                     if len(common_leaves) > 96 and max_quartets is None:
                         max_quartets = 10000
 
-                    # If max_quartets specified or sampling needed
+                    def _unrank_combination(n_items: int, k_items: int, rank: int):
+                        """Map rank in [0, C(n,k)) to the k-combination (lexicographic order)."""
+                        result = []
+                        start = 0
+                        remaining = rank
+                        for choose_idx in range(k_items, 0, -1):
+                            for first in range(start, n_items - choose_idx + 1):
+                                count = math.comb(n_items - first - 1, choose_idx - 1)
+                                if remaining < count:
+                                    result.append(first)
+                                    start = first + 1
+                                    break
+                                remaining -= count
+                        return tuple(result)
+
+                    # Uniform sample without replacement from all C(n,4) combinations.
                     if max_quartets is not None and max_quartets < total_possible:
                         print(f"[INFO] Total {total_possible:,} quartets, sampling {max_quartets:,}")
-                        # Randomly sample specified number of quartets
-                        all_quartets = random.sample(all_quartets, max_quartets)
+                        sampled_ranks = random.sample(range(total_possible), max_quartets)
+                        quartets_iter = (
+                            tuple(common_leaves[idx] for idx in _unrank_combination(n, 4, rank))
+                            for rank in sampled_ranks
+                        )
+                    else:
+                        quartets_iter = itertools.combinations(common_leaves, 4)
 
-                    for quartet in all_quartets:
+                    for quartet in quartets_iter:
                         label1 = _extract_quartet(tree1, quartet, return_branchlen=False)
                         label2 = _extract_quartet(tree2, quartet, return_branchlen=False)
                         if label1 is None or label2 is None:
