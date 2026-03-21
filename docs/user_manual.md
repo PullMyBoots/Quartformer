@@ -100,8 +100,8 @@ Place advanced settings under `advanced`. Recommended template:
 Tuning guidance:
 
 - `k_param`:
-- Usually keep the default.
-- A small tuning range can be tested (for example `2.8 ~ 3.2`); values that are too low may reduce accuracy.
+- Usually keep 3.0 default.
+- A small tuning range can be tested (for example `2.9 ~ 3.1`); values that are too low may reduce accuracy.
 - `quartet_assembler`:
 - `qfm`: often strong on small to medium datasets.
 - `qmc`: usually more robust for larger taxon counts (for example >200), and commonly preferred in large runs.
