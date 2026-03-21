@@ -143,7 +143,7 @@ Modes:
 Recommended by scale:
 
 - `<300 ~ 500 taxa`: `full` is usually acceptable.
-- `>500 taxa`: prefer `batch_only` or `off` to reduce large aggregation overhead.
+- `>700 taxa`: prefer `batch_only` or `off` to reduce large aggregation overhead.
 
 As taxa count increases, duplicate quartets are typically less frequent under your sampling strategy, so reducing aggregation often has limited stability impact.
 
