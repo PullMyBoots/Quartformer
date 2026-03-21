@@ -1,117 +1,50 @@
+<p align="center">
+  <img src="./assets/logo.svg" alt="QuartFormer Logo" width="760"/>
+</p>
+
 # QuartFormer
 
-Deep learning phylogenetic inference for sequence alignments with fast runtime, especially on very long alignments.
+QuartFormer is a fast phylogenetic tree inference framework for genome-scale data.  
+It uses deep learning to predict weighted quartets, then assembles quartets and repairs polytomies to produce a final binary tree.
 
-## What This Project Is
+## Why QuartFormer
 
-QuartFormer infers species trees from concatenated supermatrix alignments in **PHYLIP (`.phy`)** format.  
-It can be applied to both short and long sequence alignments, and provides particularly strong runtime advantages on very long alignments with moderate to high taxon counts.
-Current version supports inference tasks with **at least 24 taxa** (`num_species >= 24`).
+- **Fast**: On a single GPU, genome-scale datasets with hundreds of taxa can typically be processed in **seconds to tens of seconds** (depending on taxa count, sequence length, and configuration).
+- **Low memory footprint**: In our current tests, `1024 taxa + 10 Mbp` runs with **below 4 GB peak GPU memory**.
+- **Accurate**: The method shows stable accuracy on both simulated and real datasets. See `docs/results.md` for details.
 
-## Key Features
+## Method Overview
 
-- Fast inference across a wide range of sequence lengths using GPU-accelerated quartet scoring.
-- Particularly strong runtime advantages on very long sequence alignments.
-- Accuracy has been evaluated with **RF distance** and **quartet concordance**; see `docs/accuracy.md` for details.
-- Bundled assembly backends and model weights for reproducible release packaging.
-- Example datasets included in `examples/` for quick verification.
+QuartFormer follows this pipeline:
 
-## Performance Comparison
+1. Sample 24-taxon subsets from the input MSA.
+2. Compute site-pattern frequencies, then use a Transformer to predict weighted quartet probabilities for each subset.
+3. Feed all weighted quartets into an assembler (QFM-FI / wQMC) to build a backbone tree.
+4. Perform local subtree reconstruction at polytomies and use an MLP for topology repair.
+5. Output the final binary phylogenetic tree (with optional support computation and plotting).
 
-QuartFormer (K=3) inference time compared with other quartet-based methods. **Mbp** = Megabase pairs (million base pairs).
-
-| Taxa | Seq Length | QuartFormer | vs ASTER | vs FastTree |
-|------|------------|-------------|----------|-------------|
-| 24 | 1 Mbp | **~0.5s** | 8x | 660x |
-| 24 | 10 Mbp | **~1.5s** | 21x | 5000x |
-| 96 | 1 Mbp | **~5.3s** | 42x | 350x |
-| 96 | 10 Mbp | **~19s** | 190x | 2000x |
-| 320 | 1 Mbp | **~142s** | 12x | 46x |
-| 320 | 10 Mbp | **~330s** | 62x | N/A |
-| 512 | 10 Mbp | **~1567s** | 17x | N/A |
-
-**QuartFormer is 4-200x faster than ASTER and 46-5000x faster than FastTree** on long sequence alignments.
-
-## Official Tested Environment
-
-- OS: Ubuntu 22.04 (WSL2 Linux)
-- Python: 3.10.18
-- PyTorch: 2.8.0 + CUDA 12.8
-- Triton: 3.4.0
-- Java: OpenJDK 17
-- CMake: 3.30+
-- GPU: NVIDIA GPU with **>= 6 GB VRAM** (required)
-
-## Installation (Bundled Release)
-
-This repository includes model weights and bundled third-party components (`TREE-QMC`, `QFM-FI`), so no additional external repository checkout is required.
-
-Install CUDA-enabled PyTorch first (example for CUDA 12.8):
-
-```bash
-pip install --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio
-```
-
-Then install the remaining dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-If your local extension binaries are missing, build them from bundled sources:
-
-```bash
-python cpp_source/setup_sequence.py build_ext --inplace
-python cpp_source/setup_batching.py build_ext --inplace
-python cpp_source/cuda13_pattern_freq/setup_pytorch.py build_ext --inplace
-```
+![QuartFormer Workflow](./docs/figures/quartformer_workflow_diagram.png)
 
 ## Quick Start
 
-Default mode is `regular`.
-
 ```bash
-# Basic inference
-python run_qf.py --phy examples/24/MSA.phy --out output/qf_24.nwk --run-mode regular
+pip install -r requirements.txt
 
-# RF distance evaluation
-python run_qf.py --phy examples/48/MSA.phy --out output/qf_48.nwk --ref-tree examples/48/tree.nwk --metric rf
-
-# Quartet concordance evaluation
-python run_qf.py --phy examples/96/MSA.phy --out output/qf_96.nwk --ref-tree examples/96/tree.nwk --metric quartet
+python infer_tree.py \
+  --phy examples/24/MSA.phy \
+  --out output/example_24.nwk \
+  --task-type homogeneous
 ```
 
 ## Documentation
 
-- Speed benchmarks: `docs/benchmarks.md`
-- Accuracy benchmarks: `docs/accuracy.md`
-- Release and server deployment: `docs/deploy.md`
-
-## Input and Output
-
-- Input: concatenated supermatrix alignment in `.phy` (PHYLIP)
-- Output: inferred phylogenetic tree in `.nwk`
-
-## Runtime Requirement Note
-
-QuartFormer currently requires CUDA tensors during inference. CPU-only environments are not supported by `run_qf.py` in this release.
-
-## Current Limitation
-
-The current release does **not** explicitly model insertion/deletion (indel) signal from gap characters (`-`).  
-Gap characters are used as alignment placeholders, but indel events are not treated as an independent phylogenetic signal source in the current model.
-
-## Experimental Status and Usage Scope
-
-QuartFormer is an **experimental** deep learning-based tree inference method.  
-In this release, accuracy claims are primarily supported by simulated-data evaluations (see `docs/accuracy.md`).
-
-For real biological datasets, there is currently no complete theoretical guarantee that inferred topologies are always reliable.  
-Use QuartFormer as an auxiliary inference tool, not as the sole basis for high-stakes decisions that may cause financial, clinical, legal, or other material losses.
+- User manual: `docs/user_manual.md`
+- Results and experiments: `docs/results.md`
+- Example datasets: `examples/`
 
 ## Acknowledgments
 
-This project builds on publicly available tools and datasets. We thank the authors and maintainers of:
+QuartFormer implementation, comparisons, and experiments build on or reference the following projects/resources:
 
 - IQ-TREE: https://github.com/iqtree/iqtree2
 - RAxMLGrove: https://github.com/angtft/RAxMLGrove
@@ -120,5 +53,3 @@ This project builds on publicly available tools and datasets. We thank the autho
 - ASTER: https://github.com/chaoszhang/ASTER
 - QFM-Java: https://github.com/sharmin-mim/qfm_java
 - TREE-QMC: https://github.com/molloy-lab/TREE-QMC
-
-Please also cite the corresponding papers when using these tools and datasets in academic work.

@@ -6,6 +6,66 @@ import math
 import numpy as np
 
 
+def _support_label_for_plot(clade):
+    if clade.is_terminal():
+        return None
+    confidence = getattr(clade, "confidence", None)
+    if confidence is None:
+        return None
+    text = f"{float(confidence):.2f}"
+    return text.rstrip("0").rstrip(".")
+
+
+def draw_newick_tree_figure(
+    tree_path: Path,
+    out_path: Path,
+    title: str | None = None,
+    show_support: bool = False,
+) -> None:
+    """
+    Render a Newick tree to a static figure file.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from Bio import Phylo
+
+    tree = Phylo.read(str(tree_path), "newick")
+    tree.ladderize()
+
+    leaf_count = len(tree.get_terminals())
+    fig_height = max(8.0, leaf_count * 0.32)
+    fig_width = 18.0 if show_support else 15.0
+
+    plt.rcParams.update(
+        {
+            "font.size": 8,
+            "lines.linewidth": 1.0,
+        }
+    )
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=200)
+
+    Phylo.draw(
+        tree,
+        axes=ax,
+        do_show=False,
+        show_confidence=False,
+        label_func=lambda clade: clade.name if clade.is_terminal() else None,
+        branch_labels=_support_label_for_plot if show_support else None,
+    )
+
+    ax.set_title(title or tree_path.name, fontsize=14, pad=14)
+    ax.set_xlabel("Branch length")
+    ax.set_ylabel("")
+    ax.tick_params(axis="x", labelsize=8)
+
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _canonical_split_from_class(quartet_names, cls: int):
     """
     Generate canonical Newick format split string from quartet names and class.

@@ -156,3 +156,16 @@ software/
 .claude/
 clash/
 benchmark_test.py
+
+# Files/directories excluded from public GitHub release
+AGENTS.md
+analyze_support_validity.py
+data_maker.py
+test_accuracy_copy.py
+local_script/
+output/
+temp/
+data/
+.vscode/
+__pycache__/
+build/

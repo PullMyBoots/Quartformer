@@ -18,12 +18,12 @@ REQUIRED_PY_MODULES = [
 ]
 
 REQUIRED_PATHS = [
-    "run_qf.py",
-    "cpp_source/sequence_processor.cpython-310-x86_64-linux-gnu.so",
-    "cpp_source/batching_algorithms.cpython-310-x86_64-linux-gnu.so",
-    "cpp_source/cuda13_pattern_freq/pattern_freq_cuda.cpython-310-x86_64-linux-gnu.so",
-    "quartet_assemble_method/TREE-QMC/build/tree-qmc",
-    "quartet_assemble_method/qfm_java/QFM-FI_unzipped/QFM-FI.jar",
+    "infer_tree.py",
+    "backend/sequence_processor_backend.cpython-310-x86_64-linux-gnu.so",
+    "backend/pattern_freq_cuda_backend.cpython-310-x86_64-linux-gnu.so",
+    "backend/quartet_aggregate_backend.cpython-310-x86_64-linux-gnu.so",
+    "quartet_assemble_method/TREE-QMC_fast/build_local/tree-qmc",
+    "quartet_assemble_method/qfm_java_fast/QFM-FI_unzipped/QFM-FI-fast.jar",
     "model/homogeneous/24/qf1.pt",
     "model/heterogeneous/24/qf1.pt",
     "model/homogeneous/best_mlp_model.pth",
@@ -99,10 +99,11 @@ def main() -> int:
             print(f"- {err}")
         print("\nSuggested next steps:")
         print("- Install dependencies: pip install -r requirements.txt")
-        print("- Rebuild extensions if needed:")
-        print("  python cpp_source/setup_sequence.py build_ext --inplace")
-        print("  python cpp_source/setup_batching.py build_ext --inplace")
-        print("  python cpp_source/cuda13_pattern_freq/setup_pytorch.py build_ext --inplace")
+        print("- Ensure external tools exist:")
+        print("  - quartet_assemble_method/TREE-QMC_fast/build_local/tree-qmc")
+        print("  - quartet_assemble_method/qfm_java_fast/QFM-FI_unzipped/QFM-FI-fast.jar")
+        print("- Rebuild native extensions if needed:")
+        print("  cd backend && python setup_batching.py build_ext --inplace")
         return 1
 
     print("[OK] Environment check passed.")

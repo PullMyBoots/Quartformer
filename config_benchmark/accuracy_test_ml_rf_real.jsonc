@@ -1,0 +1,29 @@
+{
+  // =========================
+  // Common user parameters
+  // =========================
+  // This profile mirrors test_accuracy.py defaults for ml_rf_real evaluation.
+  "config": "config_benchmark/accuracy_test_ml_rf_real.jsonc",
+  "phy": "",
+  "out": "output_tree.nwk",
+  "task_type": "heterogeneous",
+  "compute_branch_support": true,
+  "plot_tree": true,
+  "ref_tree": "",
+  "metric": "rf",
+
+  // =========================
+  // Advanced parameters
+  // =========================
+  "advanced": {
+    // Keep benchmark/runtime behavior aligned with infer_config defaults
+    // unless explicitly changed for accuracy experiments.
+    "k_param": 3.0,
+    "quartet_assembler": "qmc",
+    "qmc_iter_limit": 1,
+    "aggregate_mode": "off",
+    "quartformer_top1_only": false,
+    "keep_support_files": false,
+    "infer_batch_size": 32
+  }
+}

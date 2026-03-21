@@ -1,21 +1,47 @@
 {
-  // Quartet block sampling parameter.
-  "k_param": 3.0,
+  // =========================
+  // Common user parameters
+  // =========================
+  "config": "config_benchmark/768~1024.jsonc",
+  "phy": "",
+  "out": "output_tree.nwk",
+  "task_type": "homogeneous",
+  "compute_branch_support": false,
+  "plot_tree": false,
+  "ref_tree": "",
+  "metric": "rf",
 
-  // Quartet tree assembler:
-  // qfm: use QFM-FI-fast.jar
-  // qmc: use TREE-QMC_fast tree-qmc binary
-  "quartet_assembler": "qmc",
+  // =========================
+  // Advanced parameters
+  // =========================
+  "advanced": {
+    // Quartet block sampling parameter.
+    "k_param": 3.0,
 
-  // Iteration limit for qmc assembler (--iterlimit).
-  // Only used when quartet_assembler == "qmc".
-  "qmc_iter_limit": 1,
+    // Quartet tree assembler:
+    // qfm: use QFM-FI-fast.jar
+    // qmc: use TREE-QMC_fast tree-qmc binary
+    "quartet_assembler": "qmc",
 
-  // Quartet aggregation strategy:
-  // full: global reduce
-  // batch_only: per-batch reduce only
-  // off: no reduce
-  "aggregate_mode": "off",
+    // Iteration limit for qmc assembler (--iterlimit).
+    // Only used when quartet_assembler == "qmc".
+    "qmc_iter_limit": 1,
 
-  "quartformer_top1_only": false
+    // Quartet aggregation strategy:
+    // full: global reduce
+    // batch_only: per-batch reduce only
+    // off: no reduce
+    "aggregate_mode": "off",
+
+    // QuartFormer output strategy:
+    // false: keep all 3 topology probabilities
+    // true: keep only top1 topology probability (others set to 0)
+    "quartformer_top1_only": false,
+
+    // Keep support artifacts (.support.csv / .support_quartets.txt).
+    "keep_support_files": false,
+
+    // Inference batch size.
+    "infer_batch_size": 2
+  }
 }

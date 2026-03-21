@@ -19,10 +19,10 @@ RUN_QF_INFER_SCRIPT = Path("/mnt/c/Users/descfly/Desktop/publish_code/infer_tree
 
 # 运行参数 (直接写死)
 INFER_BATCH_SIZE = 32
-TASK_TYPE = "homogeneous"     # "homogeneous" 或 "heterogeneous"
+TASK_TYPE = "heterogeneous"     # "homogeneous" 或 "heterogeneous"
 COMPUTE_BRANCH_SUPPORT = False  # True 时额外输出支持度树与支持度表
+PLOT_TREE = False
 CONFIG_PATH = Path("/mnt/c/Users/descfly/Desktop/publish_code/infer_config.jsonc")
-# 细粒度参数由 infer_config.jsonc 控制（如 quartet_assembler、qmc_iter_limit、aggregate_mode）
 
 # ============================================================
 
@@ -66,6 +66,9 @@ def run_single_test(data_subdir: Path, script_path: Path) -> dict[str, Any]:
     ]
     if COMPUTE_BRANCH_SUPPORT:
         cmd.append("--compute-branch-support")
+
+    if PLOT_TREE:
+        cmd.append("--plot-tree")
 
     print(f"\n{'='*60}")
     print(f"[INFO] Processing: {dataset_name} ({script_name})")

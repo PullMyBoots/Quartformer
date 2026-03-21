@@ -21,7 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from model import QuartFormer, MLP
-from utils import find_polytomy_representative_leaves
+from utils import draw_newick_tree_figure, find_polytomy_representative_leaves
 
 
 def _load_extension(module_name: str, so_path: Path):
@@ -35,7 +35,7 @@ def _load_extension(module_name: str, so_path: Path):
 def _load_extension_by_stem(module_name: str, directory: Path, stem: str):
     matches = sorted(directory.glob(f"{stem}*.so"))
     if not matches:
-        raise FileNotFoundError(f"未找到扩展模块: {directory / (stem + '*.so')}")
+        raise FileNotFoundError(f"Extension module not found: {directory / (stem + '*.so')}")
     return _load_extension(module_name, matches[0])
 
 
@@ -95,12 +95,39 @@ quartet_aggregate_backend = _try_load_extension_by_stem(
 
 def _load_runtime_config() -> dict:
     config_path = Path(os.environ.get("QF_INFER_CONFIG", str(DEFAULT_CONFIG_PATH)))
+    cfg = _load_jsonc_config(config_path, section=None)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Config root must be an object/dict: {config_path}")
+    # Preferred layout:
+    # - advanced: advanced algorithm/perf knobs
+    # - runtime: backward-compatible alias (older configs)
+    # If neither exists, fall back to root-level keys.
+    advanced = cfg.get("advanced")
+    if isinstance(advanced, dict):
+        return advanced
+    runtime = cfg.get("runtime")
+    if isinstance(runtime, dict):
+        return runtime
+    return cfg
+
+
+def _load_jsonc_config(config_path: Path, section: str | None = None) -> dict:
     if not config_path.exists():
-        raise FileNotFoundError(f"未找到配置文件: {config_path}")
+        raise FileNotFoundError(f"Config file not found: {config_path}")
     raw = config_path.read_text(encoding="utf-8")
     raw = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)
     raw = re.sub(r"^\s*//.*$", "", raw, flags=re.M)
-    return json.loads(raw)
+    cfg = json.loads(raw)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Config root must be an object/dict: {config_path}")
+    if section is None:
+        return cfg
+    section_cfg = cfg.get(section)
+    if section_cfg is None:
+        return cfg
+    if not isinstance(section_cfg, dict):
+        raise ValueError(f"Config section '{section}' must be an object/dict: {config_path}")
+    return section_cfg
 
 
 def _parse_bool_config(value, key_name: str) -> bool:
@@ -109,14 +136,14 @@ def _parse_bool_config(value, key_name: str) -> bool:
     if isinstance(value, (int, np.integer)):
         if value in (0, 1):
             return bool(value)
-        raise ValueError(f"{key_name} 仅支持布尔值或 0/1")
+        raise ValueError(f"{key_name} only supports boolean values or 0/1")
     if isinstance(value, str):
         normalized = value.strip().lower()
         if normalized in ("true", "1", "yes", "on"):
             return True
         if normalized in ("false", "0", "no", "off"):
             return False
-    raise ValueError(f"{key_name} 仅支持布尔值（true/false）")
+    raise ValueError(f"{key_name} only supports boolean values (true/false)")
 
 
 def run_qf(
@@ -127,20 +154,23 @@ def run_qf(
     ref_tree_path=None,
     metric: str = "rf",
     compute_branch_support: bool = False,
+    keep_support_files: bool = False,
 ):
     """
-    独立脚本增强版 run_QF_framework:
-    - 仅支持物种数 >= 24。
-    - 引入推断 Batching。
-    - 对重复四元组权重进行均值化处理。
-    - 新增：自动化多分叉修复流程（使用 MLP）。
-    - 模型类型由 task_type 决定（homogeneous / heterogeneous）。
-    - QuartFormer 四元组预测权重支持两种模式：保留 3 个拓扑，或仅保留 top1。
-    - MLP 多分叉修复阶段固定使用 QFM-FI。
-    - 若 compute_branch_support=True：保留 QuartFormer+MLP 两阶段加权四元组，并用 TREE-QMC --supportonly
-      对最终完全二叉树计算支持度。
-    - 细粒度运行参数从 infer_config.jsonc 读取。
-    - 组装器由 quartet_assembler 控制（qfm / qmc）。
+    Enhanced standalone run_QF_framework:
+    - Supports datasets with species count >= 24.
+    - Uses batched inference.
+    - Averages duplicated quartet weights.
+    - Includes automatic polytomy resolution with MLP.
+    - Model family is controlled by task_type (homogeneous / heterogeneous).
+    - QuartFormer quartet weights can keep all 3 topologies or only top1.
+    - MLP polytomy resolution always uses QFM-FI.
+    - If compute_branch_support=True, keeps weighted quartets from QuartFormer+MLP
+      and runs TREE-QMC --supportonly on the final fully-binary tree.
+    - By default only tree files are kept; if keep_support_files=True, support
+      artifacts (CSV/quartets) are preserved.
+    - Runtime parameters are loaded from infer_config.jsonc.
+    - Tree assembler is controlled by quartet_assembler (qfm / qmc).
     """
     phy_path = Path(phy_path)
     output_tree_path = _normalize_output_path(output_tree_path, phy_path)
@@ -160,6 +190,11 @@ def run_qf(
         cfg.get("quartformer_top1_only", False),
         "quartformer_top1_only",
     )
+    aggregate_intermediate_flush = _parse_bool_config(
+        cfg.get("aggregate_intermediate_flush", False),
+        "aggregate_intermediate_flush",
+    )
+    aggregate_flush_threshold_cfg = int(cfg.get("aggregate_flush_threshold", 0))
 
     model_label = task_type
 
@@ -186,24 +221,24 @@ def run_qf(
     selected_assembler = None
     selected_tree_qmc_iter_limit = None
     if quartet_assembler not in ("qfm", "qmc"):
-        raise ValueError("quartet_assembler 仅支持 qfm、qmc")
+        raise ValueError("quartet_assembler only supports qfm or qmc")
     if qmc_iter_limit <= 0:
-        raise ValueError("qmc_iter_limit 必须 > 0")
+        raise ValueError("qmc_iter_limit must be > 0")
 
     aggregate_mode_key = aggregate_mode.strip().lower()
     if aggregate_mode_key not in ("full", "batch_only", "off"):
-        raise ValueError("aggregate_mode 仅支持 full、batch_only、off")
+        raise ValueError("aggregate_mode only supports full, batch_only, or off")
 
     if quartet_aggregate_backend is None:
         raise FileNotFoundError(
-            "未检测到 backend/quartet_aggregate_backend 扩展；当前版本不再支持 NumPy 聚合回退"
+            "backend/quartet_aggregate_backend extension was not found; NumPy aggregation fallback is no longer supported"
         )
     use_cpp_quartet_aggregate = True
     # Use a fixed conservative shard strategy to avoid exposing tuning knobs.
     quartet_aggregate_shard_count = max(1, (os.cpu_count() or 1) * 2)
     if not hasattr(quartet_aggregate_backend, "aggregates_to_splits"):
         raise RuntimeError(
-            "quartet_aggregate_backend 缺少 aggregates_to_splits 接口；当前版本不再支持 NumPy split 回退"
+            "quartet_aggregate_backend is missing aggregates_to_splits; NumPy split fallback is no longer supported"
         )
     use_cpp_split_convert = True
     last_assembler_error = ""
@@ -248,11 +283,11 @@ def run_qf(
         last_assembler_error = ""
         assembler_to_use = assembler_override or selected_assembler
         if assembler_to_use is None:
-            raise RuntimeError("内部错误：assembler 未初始化")
+            raise RuntimeError("Internal error: assembler is not initialized")
         if assembler_to_use == "qfm-fi":
             qfm_fast_jar = REPO_ROOT / "quartet_assemble_method" / "qfm_java_fast" / "QFM-FI_unzipped" / "QFM-FI-fast.jar"
             if not qfm_fast_jar.exists():
-                raise FileNotFoundError(f"未找到 QFM-FI-fast jar: {qfm_fast_jar}")
+                raise FileNotFoundError(f"QFM-FI-fast jar not found: {qfm_fast_jar}")
             if input_file.suffix == ".bin":
                 input_format = "bin"
             else:
@@ -281,7 +316,7 @@ def run_qf(
         # Default to TREE-QMC / QMC
         tree_qmc_bin_path = REPO_ROOT / "quartet_assemble_method" / "TREE-QMC_fast" / "build_local" / "tree-qmc"
         if not tree_qmc_bin_path.exists():
-            raise FileNotFoundError("未找到 tree-qmc 可执行文件")
+            raise FileNotFoundError("tree-qmc executable not found")
         quartet_fmt = "___,___|___,___:___" if qmc_compact_format else "((___,___),(___,___));___"
         cmd = [
             str(tree_qmc_bin_path), "-i", str(input_file), "--quartets",
@@ -309,7 +344,7 @@ def run_qf(
         last_assembler_error = ""
         tree_qmc_bin_path = REPO_ROOT / "quartet_assemble_method" / "TREE-QMC_fast" / "build_local" / "tree-qmc"
         if not tree_qmc_bin_path.exists():
-            raise FileNotFoundError("未找到 tree-qmc 可执行文件")
+            raise FileNotFoundError("tree-qmc executable not found")
         quartet_fmt = "___,___|___,___:___" if qmc_compact_format else "((___,___),(___,___));___"
         try:
             cmd = [
@@ -334,7 +369,7 @@ def run_qf(
                 stderr=subprocess.PIPE,
             )
             if proc.stdin is None:
-                _set_assembler_error(cmd, exc=RuntimeError("无法打开 tree-qmc stdin"))
+                _set_assembler_error(cmd, exc=RuntimeError("Failed to open tree-qmc stdin"))
                 return False
             try:
                 _write_split_records_binary(
@@ -379,9 +414,9 @@ def run_qf(
         last_assembler_error = ""
         tree_qmc_bin_path = REPO_ROOT / "quartet_assemble_method" / "TREE-QMC_fast" / "build_local" / "tree-qmc"
         if not tree_qmc_bin_path.exists():
-            raise FileNotFoundError("未找到 tree-qmc 可执行文件")
+            raise FileNotFoundError("tree-qmc executable not found")
         if not binary_input_file.exists():
-            _set_assembler_error(["tree-qmc"], exc=FileNotFoundError(f"未找到二进制 quartet 文件: {binary_input_file}"))
+            _set_assembler_error(["tree-qmc"], exc=FileNotFoundError(f"Binary quartet file not found: {binary_input_file}"))
             return False
         quartet_fmt = "___,___|___,___:___" if qmc_compact_format else "((___,___),(___,___));___"
         cmd = [
@@ -416,7 +451,7 @@ def run_qf(
     ) -> bool:
         tree_qmc_bin_path = REPO_ROOT / "quartet_assemble_method" / "TREE-QMC_fast" / "build_local" / "tree-qmc"
         if not tree_qmc_bin_path.exists():
-            raise FileNotFoundError("未找到 tree-qmc 可执行文件")
+            raise FileNotFoundError("tree-qmc executable not found")
         cmd = [
             str(tree_qmc_bin_path),
             "-i",
@@ -441,16 +476,16 @@ def run_qf(
         )
         return result.returncode == 0 and support_tree_file.exists()
 
-    # --- 1. 加载数据与初始化 ---
+    # --- 1. Load data and initialize ---
     seq_tensor, species_names = sp.load_phy_to_tensor(
         str(phy_path),
         drop_conserved_sites=True,
     )
     num_species = seq_tensor.shape[0]
     if num_species < 24:
-        raise ValueError("run_qf 仅支持物种数 >= 24")
+        raise ValueError("run_qf only supports species count >= 24")
     if num_species >= 65536:
-        raise ValueError("当前加速实现要求物种数 < 65536")
+        raise ValueError("Current accelerated path requires species count < 65536")
 
     if quartet_assembler == "qfm":
         selected_assembler = "qfm-fi"
@@ -461,6 +496,7 @@ def run_qf(
         f"[INFO] model_label={model_label}, quartet_assembler={quartet_assembler}, "
         f"selected_assembler={selected_assembler}, num_species={num_species}, "
         f"aggregate_mode={aggregate_mode_key}, "
+        f"aggregate_intermediate_flush={aggregate_intermediate_flush}, "
         f"quartformer_top1_only={quartformer_top1_only}, "
         f"cpp_quartet_aggregate={use_cpp_quartet_aggregate}, "
         f"cpp_split_convert={use_cpp_split_convert}, "
@@ -503,22 +539,24 @@ def run_qf(
             out.append(idx)
         return out
 
-    # 预生成标签，避免热点路径反复 f-string 构造
+    # Pre-build labels to avoid repeated f-string construction in hot paths.
     taxon_labels = [_idx_to_label(i) for i in range(num_species)]
 
-    # --- 2. 确定采样组合 (Blocks) ---
+    # --- 2. Build sampling blocks ---
     if num_species == 24:
         blocks = [list(range(num_species))]
     else:
         so_path = REPO_ROOT / "backend" / "batching_algorithms.cpython-310-x86_64-linux-gnu.so"
         spec = importlib.util.spec_from_file_location("batching_algorithms", so_path)
         batching_algorithms = importlib.util.module_from_spec(spec)
+        if spec.loader is None:
+            raise RuntimeError(f"Unable to load batching extension: {so_path}")
         spec.loader.exec_module(batching_algorithms)
         blocks = batching_algorithms.pair_balanced_block_design_v5(
             num_species=num_species, k_param=k_param, batch_size=model_size, seed=42, species_weight=2.0, threads=1
         )
 
-    # --- 3. 批量推断四元组权重 ---
+    # --- 3. Batch inference for quartet weights ---
     model_dir = _model_dir(model_size)
     coeff_blocks = torch.load(model_dir / "coeff_blocks.pt", map_location="cpu", weights_only=False).to(device)
     quartet_matrix = torch.load(model_dir / "quartet_matrix.pt", map_location="cpu", weights_only=False).to(device)
@@ -529,16 +567,16 @@ def run_qf(
     pad_len = expected_padded_len - expected_valid_len
     if species_enc.shape[0] != expected_valid_len:
         raise ValueError(
-            f"species_encoding 长度异常: {species_enc.shape[0]}，预期 {expected_valid_len}"
+            f"species_encoding length mismatch: got {species_enc.shape[0]}, expected {expected_valid_len}"
         )
     if quartet_matrix.shape[0] != expected_padded_len:
         raise ValueError(
-            f"quartet_matrix 长度异常: {quartet_matrix.shape[0]}，预期 {expected_padded_len}"
+            f"quartet_matrix length mismatch: got {quartet_matrix.shape[0]}, expected {expected_padded_len}"
         )
     
     resolved_attn_weight = model_dir / "qf1.pt"
     if not resolved_attn_weight.exists():
-        raise FileNotFoundError(f"未找到注意力模型权重: {resolved_attn_weight}")
+        raise FileNotFoundError(f"Attention model checkpoint not found: {resolved_attn_weight}")
     attn_model = QuartFormer(species_num=model_size)
     attn_model.load_state_dict(torch.load(resolved_attn_weight, map_location="cpu", weights_only=False))
     attn_model = attn_model.to(device).eval()
@@ -560,8 +598,15 @@ def run_qf(
     flush_invocations = 0
     flush_time_s = 0.0
     stream_split_lines = 0
-    # 分段聚合，避免在大规模物种场景下末尾一次性 reduce 过慢且长时间无日志。
-    agg_flush_threshold = max(2_000_000, local_quartet_count * max(int(infer_batch_size), 1) * 32)
+    # By default, avoid intermediate flushes so CPU aggregation does not interfere
+    # with the GPU inference loop. If enabled via config, allow periodic flush.
+    if aggregate_intermediate_flush:
+        if aggregate_flush_threshold_cfg > 0:
+            agg_flush_threshold = aggregate_flush_threshold_cfg
+        else:
+            agg_flush_threshold = max(2_000_000, local_quartet_count * max(int(infer_batch_size), 1) * 32)
+    else:
+        agg_flush_threshold = None
     qfm_fast_jar = REPO_ROOT / "quartet_assemble_method" / "qfm_java_fast" / "QFM-FI_unzipped" / "QFM-FI-fast.jar"
     stream_binary_mode = aggregate_mode_key in ("batch_only", "off") and (
         selected_assembler == "tree-qmc"
@@ -652,7 +697,7 @@ def run_qf(
         if split_keys.size == 0:
             return
         if output_mode not in ("qmc", "qfm"):
-            raise ValueError(f"未知输出格式: {output_mode}")
+            raise ValueError(f"Unknown output format: {output_mode}")
         write_chunk_size = 500_000
         for start in range(0, split_keys.size, write_chunk_size):
             end = min(start + write_chunk_size, split_keys.size)
@@ -722,11 +767,11 @@ def run_qf(
         pending_counts.clear()
         pending_entries = 0
 
-    print(f"[INFO] 开始批量推断 ({len(blocks)} blocks, BatchSize={infer_batch_size})...")
+    print(f"[INFO] Starting batch inference ({len(blocks)} blocks, BatchSize={infer_batch_size})...")
     
     from tqdm import tqdm
     
-    pbar = tqdm(total=len(blocks), desc="[INFO] 批量推断进度")
+    pbar = tqdm(total=len(blocks), desc="[INFO] Batch inference progress")
     for i in range(0, len(blocks), infer_batch_size):
         batch_blocks = blocks[i : i + infer_batch_size]
         actual_bs = len(batch_blocks)
@@ -736,7 +781,7 @@ def run_qf(
             block_sorted = np.asarray(sorted(block), dtype=np.int32)
             if block_sorted.size != model_size:
                 raise ValueError(
-                    f"block 大小异常: {block_sorted.size}，预期固定为 {model_size}"
+                    f"Block size mismatch: got {block_sorted.size}, expected fixed size {model_size}"
                 )
             batch_quartets_np[batch_idx] = block_sorted[local_quartet_template]
 
@@ -751,7 +796,7 @@ def run_qf(
         input_batch = torch.cat([species_batch, pattern_batch], dim=2)
         if input_batch.size(1) != expected_valid_len:
             raise ValueError(
-                f"input_batch 长度异常: {input_batch.size(1)}，预期 {expected_valid_len}"
+                f"input_batch length mismatch: got {input_batch.size(1)}, expected {expected_valid_len}"
             )
         input_batch_for_model = torch.cat(
             [input_batch, input_batch.new_zeros((actual_bs, pad_len, input_batch.size(2)))],
@@ -781,14 +826,14 @@ def run_qf(
             pending_sums.append(batch_sums)
             pending_counts.append(batch_counts)
             pending_entries += uniq_keys.size
-            if pending_entries >= agg_flush_threshold:
+            if agg_flush_threshold is not None and pending_entries >= agg_flush_threshold:
                 flush_start = time.perf_counter()
                 _flush_quartet_aggregates()
                 flush_elapsed = time.perf_counter() - flush_start
                 flush_invocations += 1
                 flush_time_s += flush_elapsed
                 pbar.write(
-                    f"[INFO] 中间聚合完成 #{flush_invocations}: unique_quartets={agg_quartet_keys.size}, "
+                    f"[INFO] Intermediate aggregation done #{flush_invocations}: unique_quartets={agg_quartet_keys.size}, "
                     f"flush_time={flush_elapsed:.2f}s"
                 )
         elif aggregate_mode_key == "batch_only":
@@ -819,11 +864,11 @@ def run_qf(
                     _append_split_lines(support_handle, split_keys_batch, split_weights_batch, output_mode="qmc")
         pbar.update(actual_bs)
     pbar.close()
-    # --- 4. 组装前准备 ---
+    # --- 4. Prepare assembly input ---
     if aggregate_mode_key == "full":
         if pending_entries > 0:
             print(
-                f"[INFO] 正在执行最终聚合: pending_entries={pending_entries}, "
+                f"[INFO] Running final aggregation: pending_entries={pending_entries}, "
                 f"current_unique_quartets={agg_quartet_keys.size}"
             )
             flush_start = time.perf_counter()
@@ -832,12 +877,12 @@ def run_qf(
             flush_invocations += 1
             flush_time_s += flush_elapsed
             print(
-                f"[INFO] 最终聚合完成: unique_quartets={agg_quartet_keys.size}, "
+                f"[INFO] Final aggregation done: unique_quartets={agg_quartet_keys.size}, "
                 f"flush_time={flush_elapsed:.2f}s"
             )
 
         if agg_quartet_keys.size == 0:
-            print("[ERROR] 未生成任何四元组权重")
+            print("[ERROR] No quartet weights were generated")
             return ""
 
         split_start = time.perf_counter()
@@ -848,11 +893,11 @@ def run_qf(
         )
         split_elapsed = time.perf_counter() - split_start
         if split_keys_unique.size == 0:
-            print("[ERROR] 四元组均值权重全为 0，无法组装")
+            print("[ERROR] Averaged quartet weights are all zero; assembly cannot proceed")
             return ""
 
         print(
-            f"[INFO] 聚合统计: unique_quartets={agg_quartet_keys.size}, split_lines={split_keys_unique.size}, "
+            f"[INFO] Aggregation stats: unique_quartets={agg_quartet_keys.size}, split_lines={split_keys_unique.size}, "
             f"flush_calls={flush_invocations}, flush_total_time={flush_time_s:.2f}s, "
             f"split_convert_time={split_elapsed:.2f}s"
         )
@@ -867,7 +912,7 @@ def run_qf(
         if support_handle is not None:
             _append_split_lines(support_handle, split_keys_unique, split_weight_sums, output_mode="qmc")
 
-        print(f"[INFO] 正在执行初始组装器: assembler={selected_assembler}")
+        print(f"[INFO] Running initial assembler: assembler={selected_assembler}")
         assembler_start = time.perf_counter()
         ok = _run_tree_qmc_from_memory(
             split_keys_unique,
@@ -879,19 +924,19 @@ def run_qf(
             output_file,
             qmc_compact_format=False,
         )
-        print(f"[INFO] 初始组装器结束: assembler={selected_assembler}, elapsed={time.perf_counter() - assembler_start:.2f}s")
+        print(f"[INFO] Initial assembler finished: assembler={selected_assembler}, elapsed={time.perf_counter() - assembler_start:.2f}s")
     else:
         if stream_handle is not None:
             stream_handle.close()
             stream_handle = None
         if stream_split_lines == 0:
-            print("[ERROR] 未生成任何 split 记录，无法组装")
+            print("[ERROR] No split records were generated; assembly cannot proceed")
             return ""
         print(
-            f"[INFO] 流式统计: aggregate_mode={aggregate_mode_key}, split_lines={stream_split_lines}, "
+            f"[INFO] Streaming stats: aggregate_mode={aggregate_mode_key}, split_lines={stream_split_lines}, "
             f"binary_io={stream_binary_mode}"
         )
-        print(f"[INFO] 正在执行初始组装器: assembler={selected_assembler}")
+        print(f"[INFO] Running initial assembler: assembler={selected_assembler}")
         assembler_start = time.perf_counter()
         if selected_assembler == "tree-qmc" and stream_binary_mode:
             ok = _run_tree_qmc_from_binary_file(
@@ -911,23 +956,23 @@ def run_qf(
                 output_file,
                 qmc_compact_format=(selected_assembler == "tree-qmc"),
             )
-        print(f"[INFO] 初始组装器结束: assembler={selected_assembler}, elapsed={time.perf_counter() - assembler_start:.2f}s")
+        print(f"[INFO] Initial assembler finished: assembler={selected_assembler}, elapsed={time.perf_counter() - assembler_start:.2f}s")
     if not ok:
-        print("[ERROR] 初始组装失败")
+        print("[ERROR] Initial assembly failed")
         if last_assembler_error:
-            print(f"[ERROR] 组装器详情: {last_assembler_error}")
+            print(f"[ERROR] Assembler details: {last_assembler_error}")
         return ""
 
-    # --- 5. 多分叉修复流程 (MLP) ---
-    print("[INFO] 正在检查并修复多分叉节点...")
+    # --- 5. Polytomy resolution (MLP) ---
+    print("[INFO] Checking and resolving polytomies...")
     tree = Tree(str(output_file))
     tree.unroot()
 
-    # 加载 MLP 模型用于修复
+    # Load MLP model for polytomy resolution.
     default_mlp_weight = REPO_ROOT / "model" / model_label / "best_mlp_model.pth"
     mlp_weight = default_mlp_weight
     if not mlp_weight.exists():
-        raise FileNotFoundError(f"未找到 MLP 权重: {mlp_weight}")
+        raise FileNotFoundError(f"MLP checkpoint not found: {mlp_weight}")
     mlp_model = MLP().to(device)
     mlp_model.load_state_dict(torch.load(mlp_weight, map_location=device, weights_only=False))
     mlp_model.eval()
@@ -998,7 +1043,8 @@ def run_qf(
     iteration = 0
     while True:
         polytomies = find_polytomy_representative_leaves(tree)
-        if not polytomies: break
+        if not polytomies:
+            break
         iteration += 1
         poly = polytomies[0]
         target_node, all_reps_raw = poly["node"], poly["representative_leaves"]
@@ -1007,7 +1053,7 @@ def run_qf(
         all_rep_ids = _normalize_rep_idx_list(all_reps_raw)
         child_rep_ids = _normalize_rep_idx_list(child_reps_raw)
         if len(all_rep_ids) < 4 or len(child_rep_ids) < 2:
-            print(f"[WARN] 多分叉代表叶子存在非法标签，跳过本轮修复: all={all_reps_raw}, child={child_reps_raw}")
+            print(f"[WARN] Invalid representative labels for polytomy; skipping this resolution pass: all={all_reps_raw}, child={child_reps_raw}")
             break
         
         rep_to_clade = {}
@@ -1021,13 +1067,14 @@ def run_qf(
             if g_node.is_leaf():
                 rep_idx = _label_to_idx(g_node.name)
                 if rep_idx is None:
-                    raise ValueError(f"无法解析引导树叶子标签: {g_node.name!r}")
+                    raise ValueError(f"Cannot parse guide-tree leaf label: {g_node.name!r}")
                 key = _idx_to_label(rep_idx)
                 if key not in rep_to_clade:
-                    raise KeyError(f"引导树叶子 {key!r} 未在目标多分叉子树映射中找到")
+                    raise KeyError(f"Guide-tree leaf {key!r} is missing in target polytomy mapping")
                 return rep_to_clade[key]
             new_n = Tree()
-            for ch in g_node.children: new_n.add_child(build_resolved(ch))
+            for ch in g_node.children:
+                new_n.add_child(build_resolved(ch))
             return new_n
 
         for ch in list(target_node.children):
@@ -1035,12 +1082,13 @@ def run_qf(
         for guide_child in guide.children:
             target_node.add_child(build_resolved(guide_child))
 
-    # --- 6. 完成 ---
+    # --- 6. Finalize outputs ---
     if support_handle is not None:
         support_handle.close()
-        print(f"[INFO] 支持度四元组文件已保存至 {support_quartet_out}")
+        if keep_support_files:
+            print(f"[INFO] Support quartet file saved: {support_quartet_out}")
     if compute_branch_support:
-        print("[INFO] 正在使用 TREE-QMC 输出分枝支持度...")
+        print("[INFO] Running TREE-QMC branch support annotation...")
         tree.write(outfile=str(qmc_support_base_tree_file), format=1)
         ok = _run_qmc_support_annotation(
             quartet_file=support_quartet_out,
@@ -1051,15 +1099,25 @@ def run_qf(
         if ok:
             support_tree = Tree(str(qmc_support_annotated_file), format=1, quoted_node_names=True)
             support_tree.unroot()
+            for node in support_tree.traverse("postorder"):
+                if node.is_leaf():
+                    continue
+                q1 = _extract_q1_support(node.name)
+                if q1 is not None:
+                    node.support = q1
+                node.name = ""
+                node.dist = 0.0
             for leaf in support_tree.iter_leaves():
                 idx = _label_to_idx(leaf.name)
                 if idx is not None:
                     leaf.name = species_names[idx]
-            support_tree.write(outfile=str(support_tree_out), format=1)
-            print(f"[SUCCESS] 分枝支持度树已保存至 {support_tree_out}")
-            print(f"[SUCCESS] 分枝支持度表已保存至 {support_table_out}")
+                leaf.dist = 0.0
+            support_tree_out.write_text(_to_newick_support_only(support_tree, is_root=True) + "\n")
+            print(f"[SUCCESS] Branch-support tree saved: {support_tree_out}")
+            if keep_support_files:
+                print(f"[SUCCESS] Branch-support table saved: {support_table_out}")
         else:
-            print("[WARN] TREE-QMC 支持度输出失败，已跳过支持度文件")
+            print("[WARN] TREE-QMC support annotation failed; skipped support outputs")
 
     tree.unroot()
     for leaf in tree.iter_leaves():
@@ -1067,12 +1125,15 @@ def run_qf(
         if idx is not None:
             leaf.name = species_names[idx]
     tree.write(outfile=str(output_tree_path), format=1)
-    print(f"[SUCCESS] 最终二叉树已保存至 {output_tree_path}")
+    print(f"[SUCCESS] Final binary tree saved: {output_tree_path}")
     input_file.unlink(missing_ok=True)
     input_bin_file.unlink(missing_ok=True)
     output_file.unlink(missing_ok=True)
     qmc_support_base_tree_file.unlink(missing_ok=True)
     qmc_support_annotated_file.unlink(missing_ok=True)
+    if compute_branch_support and not keep_support_files:
+        support_quartet_out.unlink(missing_ok=True)
+        support_table_out.unlink(missing_ok=True)
     if ref_tree_path:
         from utils import compute_tree_difference
 
@@ -1100,26 +1161,188 @@ def _normalize_output_path(output_tree_path, phy_path):
     return output_tree_path
 
 
+def _extract_q1_support(node_name: str | None) -> float | None:
+    if not node_name:
+        return None
+    m = re.search(r"(?:q1=|_q1_)([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)", node_name)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _to_newick_support_only(node, is_root: bool = False) -> str:
+    if node.is_leaf():
+        return node.name
+    children = ",".join(_to_newick_support_only(ch, False) for ch in node.children)
+    if is_root:
+        return f"({children});"
+    support = getattr(node, "support", None)
+    if support is None:
+        return f"({children})"
+    return f"({children}){float(support):.6f}"
+
+
+def _render_tree_figure(tree_path: Path, show_support: bool = False) -> None:
+    if not tree_path.exists():
+        print(f"[WARN] Tree file does not exist; skipping render: {tree_path}")
+        return
+    fig_path = tree_path.with_suffix(".png")
+    try:
+        draw_newick_tree_figure(
+            tree_path=tree_path,
+            out_path=fig_path,
+            title=tree_path.stem,
+            show_support=show_support,
+        )
+        print(f"[SUCCESS] Tree figure saved: {fig_path}")
+    except Exception as exc:
+        print(f"[WARN] Tree rendering failed: {exc}")
+
+
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Run server_bin dense pipeline in current repository.")
-    parser.add_argument("--phy", required=True, help="Input alignment file path (PHY format)")
-    parser.add_argument("--out", help="Output tree path", default="output_tree.nwk")
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to infer config JSONC")
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to config JSON/JSONC")
+    pre_args, _ = pre_parser.parse_known_args(argv)
+
+    config_path = Path(pre_args.config)
+    try:
+        full_cfg = _load_jsonc_config(config_path, section=None)
+    except Exception:
+        full_cfg = {}
+
+    def _pick_section_dict(cfg: dict, *keys: str) -> dict:
+        for k in keys:
+            v = cfg.get(k)
+            if isinstance(v, dict):
+                return v
+        return {}
+
+    # Config sections:
+    # - basic: common user-facing parameters (usually passed via CLI)
+    # - advanced: advanced/perf/algorithm knobs (usually configured via JSONC)
+    # Backward compatibility:
+    # - cli -> basic
+    # - runtime -> advanced
+    # - root-level keys still work for both if sections are missing
+    basic_cfg: dict = {}
+    advanced_cfg: dict = {}
+    if isinstance(full_cfg, dict):
+        basic_cfg = _pick_section_dict(full_cfg, "basic", "cli")
+        advanced_cfg = _pick_section_dict(full_cfg, "advanced", "runtime")
+        if not basic_cfg:
+            basic_cfg = full_cfg
+        if not advanced_cfg:
+            advanced_cfg = full_cfg
+
+    normalized_basic_cfg: dict[str, object] = {}
+    for k, v in basic_cfg.items():
+        if not isinstance(k, str):
+            continue
+        normalized_basic_cfg[k.strip().lower().replace("-", "_")] = v
+    normalized_advanced_cfg: dict[str, object] = {}
+    for k, v in advanced_cfg.items():
+        if not isinstance(k, str):
+            continue
+        normalized_advanced_cfg[k.strip().lower().replace("-", "_")] = v
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "QuartFormer inference driver. Parameters can be provided via CLI and/or a JSON/JSONC config file.\n"
+            "Precedence: basic params use CLI > config > defaults; advanced params use config > CLI > defaults."
+        )
+    )
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to config JSON/JSONC")
+    parser.add_argument("--phy", required=False, help="Input alignment file path (PHY format)")
+    parser.add_argument("--out", default="output_tree.nwk", help="Output tree path")
     parser.add_argument(
         "--task-type",
         choices=["homogeneous", "heterogeneous"],
         default="homogeneous",
         help="Model family",
     )
-    parser.add_argument("--infer-batch-size", type=int, default=32)
-    parser.add_argument("--ref-tree", default="", help="Optional reference tree path")
-    parser.add_argument("--metric", choices=["rf", "quartet"], default="rf")
     parser.add_argument(
         "--compute-branch-support",
         action="store_true",
-        help="Retain weighted quartets from QuartFormer+MLP phases and compute support for final binary tree with TREE-QMC",
+        help="Compute and write a support-annotated tree via TREE-QMC support-only mode.",
     )
+    parser.add_argument(
+        "--plot-tree",
+        action="store_true",
+        help="Render output tree(s) to PNG right after writing NWK files.",
+    )
+    parser.add_argument("--ref-tree", default="", help="Optional reference tree path")
+    parser.add_argument("--metric", choices=["rf", "quartet"], default="rf")
+    parser.add_argument(
+        "--keep-support-files",
+        action="store_true",
+        help="Keep support artifacts (.support.csv / .support_quartets.txt).",
+    )
+    parser.add_argument("--infer-batch-size", type=int, default=32)
+
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
     args = parser.parse_args(argv)
+
+    def _cli_has_flag(*flags: str) -> bool:
+        return any(flag in raw_argv for flag in flags)
+
+    def _basic_config_get(*keys: str):
+        for key in keys:
+            if key in normalized_basic_cfg:
+                return normalized_basic_cfg[key]
+        return None
+
+    def _advanced_config_get(*keys: str):
+        for key in keys:
+            if key in normalized_advanced_cfg:
+                return normalized_advanced_cfg[key]
+        return None
+
+    def _normalize_choice(value, name: str, allowed: set[str]) -> str:
+        v = str(value).strip()
+        if v not in allowed:
+            raise SystemExit(f"Invalid config value for {name}: {v}. Allowed: {sorted(allowed)}")
+        return v
+
+    # Basic parameters: CLI > config > defaults.
+    # Only fill from config when the corresponding CLI flag is absent.
+    cfg_val = _basic_config_get("phy")
+    if (not _cli_has_flag("--phy")) and cfg_val is not None and str(cfg_val).strip():
+        args.phy = str(cfg_val)
+    cfg_val = _basic_config_get("out")
+    if (not _cli_has_flag("--out")) and cfg_val is not None and str(cfg_val).strip():
+        args.out = str(cfg_val)
+    cfg_val = _basic_config_get("task_type", "task-type")
+    if (not _cli_has_flag("--task-type")) and cfg_val is not None:
+        args.task_type = _normalize_choice(cfg_val, "task_type", {"homogeneous", "heterogeneous"})
+    cfg_val = _basic_config_get("compute_branch_support", "compute-branch-support")
+    if (not _cli_has_flag("--compute-branch-support")) and cfg_val is not None:
+        args.compute_branch_support = _parse_bool_config(cfg_val, "compute_branch_support")
+    cfg_val = _basic_config_get("plot_tree", "plot-tree")
+    if (not _cli_has_flag("--plot-tree")) and cfg_val is not None:
+        args.plot_tree = _parse_bool_config(cfg_val, "plot_tree")
+    cfg_val = _basic_config_get("ref_tree", "ref-tree")
+    if (not _cli_has_flag("--ref-tree")) and cfg_val is not None:
+        args.ref_tree = str(cfg_val)
+    cfg_val = _basic_config_get("metric")
+    if (not _cli_has_flag("--metric")) and cfg_val is not None:
+        args.metric = _normalize_choice(cfg_val, "metric", {"rf", "quartet"})
+
+    # Advanced parameters: config > CLI > defaults.
+    cfg_val = _advanced_config_get("keep_support_files", "keep-support-files")
+    if cfg_val is not None:
+        args.keep_support_files = _parse_bool_config(cfg_val, "keep_support_files")
+    cfg_val = _advanced_config_get("infer_batch_size", "infer-batch-size")
+    if cfg_val is not None:
+        args.infer_batch_size = int(cfg_val)
+
+    if args.phy is None or not str(args.phy).strip():
+        raise SystemExit("Missing required parameter: phy (provide --phy or set 'phy' in config)")
+    if args.infer_batch_size <= 0:
+        raise SystemExit("infer_batch_size must be > 0")
+
     os.environ["QF_INFER_CONFIG"] = args.config
 
     ref_tree_path = args.ref_tree if args.ref_tree else None
@@ -1131,6 +1354,7 @@ def main(argv=None) -> int:
         ref_tree_path=ref_tree_path,
         metric=args.metric,
         compute_branch_support=args.compute_branch_support,
+        keep_support_files=args.keep_support_files,
     )
     if ref_tree_path:
         tree_path, metric_value = result
@@ -1138,7 +1362,14 @@ def main(argv=None) -> int:
         print(f"\n[FINAL] Inferred tree: {tree_path}")
         print(f"[FINAL] {metric_name}: {metric_value:.6f}")
     else:
-        print(f"\n[FINAL] Inferred tree: {result}")
+        tree_path = result
+        print(f"\n[FINAL] Inferred tree: {tree_path}")
+    if args.plot_tree:
+        inferred_tree_path = Path(tree_path)
+        _render_tree_figure(inferred_tree_path, show_support=False)
+        if args.compute_branch_support:
+            support_tree_path = inferred_tree_path.with_name(f"{inferred_tree_path.stem}.support.nwk")
+            _render_tree_figure(support_tree_path, show_support=True)
     return 0
 
 
