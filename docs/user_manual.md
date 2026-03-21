@@ -18,30 +18,23 @@ Recommended checks:
 
 ### 2.1 Configuration Loading and Override Rules (Important)
 
-At runtime, parameters are resolved in this order:
+At runtime, QuartFormer resolves parameters as follows:
 
-1. By default, the program reads `infer_config.jsonc` from the project root.  
-In this repository, the default path is:  
-`/mnt/c/Users/descfly/Desktop/publish_code/infer_config.jsonc`
-2. If you pass `--config <path>`, that file is used instead.
-3. Parameters are then processed in two groups:
-- `basic`: `phy/out/task_type/compute_branch_support/plot_tree/ref_tree/metric/quartet_sample_size`
-- `advanced`: `k_param/quartet_assembler/qmc_iter_limit/aggregate_mode/...`
+1. It reads `infer_config.jsonc` from the project root by default.  
+   In this repository: `/mnt/c/Users/descfly/Desktop/publish_code/infer_config.jsonc`
+2. If `--config <path>` is provided, that file is used instead.
+3. Parameters are treated as two groups:  
+   `basic` (`phy`, `out`, `task_type`, `compute_branch_support`, `plot_tree`, `ref_tree`, `metric`, `quartet_sample_size`) and `advanced` (`k_param`, `quartet_assembler`, `qmc_iter_limit`, `aggregate_mode`, ...).
 
-Current precedence:
+Precedence rules in current code:
 
 - `basic`: `CLI > config > default`
 - `advanced`: `config > CLI > default`
 
-Practical interpretation:
+Practical usage:
 
-- For temporary changes (input/output, mode, support switch), prefer CLI.
-- For stable performance/assembly behavior, define values in `advanced` within config.
-
-Note:
-
-- The current CLI does not provide reverse flags like `--no-compute-branch-support` or `--no-plot-tree`.  
-If those options are set to `true` in config, they remain enabled unless the config is changed.
+- Use CLI for run-specific inputs (`phy`, `out`, `task_type`, `metric`).
+- Keep stable tuning knobs in config (`advanced` section).
 
 Common (`basic`) parameter block:
 
@@ -54,30 +47,40 @@ Common (`basic`) parameter block:
   "compute_branch_support": false,
   "plot_tree": false,
   "ref_tree": "",
+  "metric": "rf"
+}
+```
+
+If you use quartet concordance as the metric, add:
+
+```json
+{
   "metric": "quartet",
   "quartet_sample_size": 40000
 }
 ```
 
-Parameter notes:
+### 2.2 Basic Parameter Reference
 
-- `phy`: input alignment path (`.phy`).
-- `out`: output tree path (`.nwk`).
-- `task_type`:
-- `homogeneous`: gene-tree construction mode.
-- `heterogeneous`: species-tree construction mode. Its training distribution explicitly includes complex events such as ILS, horizontal gene transfer (HGT), and gene copy gain/loss.
-- `compute_branch_support`:
-- When enabled, TREE-QMC support-only mode is used to annotate internal branches with support values from weighted quartets.
-- For large taxon sets (for example, >400 or >500), support computation can significantly increase runtime.
-- `plot_tree`: whether to also render tree figures (`.png`).
-- `ref_tree` + `metric`:
-- Use these when a reference tree is available and you want formal topology comparison.
-- `metric="rf"`: normalized RF distance.
-- `metric="quartet"`: quartet concordance (large cases typically use sampling internally).
-- `quartet_sample_size`:
-- Used when `metric="quartet"`.
-- `>0`: sample at most this many quartets.
-- `0`: compute all quartets (can be very slow on large trees).
+`phy`: Input alignment path (`.phy`).
+
+`out`: Output tree path (`.nwk`).
+
+`task_type`: Inference mode.  
+`homogeneous` is used for gene-tree-oriented settings.  
+`heterogeneous` is used for species-tree-oriented settings (training distribution includes ILS, HGT, and gene copy gain/loss effects).
+
+`compute_branch_support`: If enabled, TREE-QMC support-only mode is used to annotate internal branches.
+
+`plot_tree`: If enabled, also render output tree figures (`.png`).
+
+`ref_tree` + `metric`: Optional formal comparison against a reference tree.  
+`metric="rf"`: normalized RF distance.  
+`metric="quartet"`: quartet concordance.
+
+`quartet_sample_size`: Used only when `metric="quartet"`.  
+`>0` means sample up to this many quartets.  
+`0` means no sampling (compute all quartets; may be very slow on large trees).
 
 ## 3. Advanced Parameters
 
@@ -96,39 +99,60 @@ Place advanced settings under `advanced`. Recommended template:
   }
 }
 ```
-- `k_param`:
-- What it controls:
-- `k_param` controls how fast the quartet sampling budget grows as the number of taxa increases.
-- In the current implementation, the target budget is:
-- `target_total_quartets = num_species ^ k_param`
-- This target is converted into the number of sampled blocks (24-taxon blocks in the current inference path), so larger `k_param` means more sampled blocks and more inferred quartets.
-- Practical effect:
-- Larger `k_param`: better coverage and usually better stability on difficult datasets, but slower runtime and higher aggregation overhead.
-- Smaller `k_param`: faster runtime, but higher risk of under-sampling and accuracy drop.
-- Recommended usage:
-- Keep `3.0` as the default.
-- Tune only in a narrow range (for example `2.9 ~ 3.1`).
-- Avoid setting it too low on large or difficult datasets.
-- `quartet_assembler`:
-- `qfm`: can be slightly better in accuracy in many settings, and is a good default when taxa count is very large.
-- `qmc`: accuracy is often close to `qfm` (usually no large gap), while runtime behavior can differ by dataset.
-- `qmc_iter_limit`: controls qmc search depth (used only when `quartet_assembler="qmc"`); larger values are usually slower.
-- `aggregate_mode`:
-- Why aggregation matters:
-- Repeated quartets from different sampled subsets can be merged and accumulated.
-- This accumulation can shift some quartet weights upward relative to others, which may introduce instability risk versus the original design goal (keeping quartet weights on a comparable 0~100 scale).
-- This is not a guaranteed "more accurate" or "less accurate" effect; it is mainly a weighting-stability and overhead tradeoff.
-- Practical recommendation by taxa scale:
-- For smaller/medium datasets (roughly `<300` to `<500` taxa), `full` is acceptable.
-- For larger datasets (roughly `>500` taxa), prefer `batch_only` or `off` to reduce large-scale aggregation overhead.
-- As taxa count increases, your sampling strategy typically reduces duplicate quartets, so turning aggregation down/off usually has limited stability impact.
-- `quartformer_top1_only`:
-- `true` can speed up assembly, but may reduce accuracy.
-- `keep_support_files`:
-- whether to retain `.support.csv` and `.support_quartets.txt`.
-- `infer_batch_size` (integer):
-- reduce this first when GPU memory is limited.
-- Based on your observed setting: for `1024 taxa + 10Mbp`, `infer_batch_size=2` uses about `~3GB` VRAM.
+
+### 3.1 `k_param` (Sampling Budget Growth)
+
+`k_param` controls how fast quartet sampling budget grows as taxa count increases.
+
+In current implementation:
+
+```text
+target_total_quartets = num_species ^ k_param
+```
+
+That target is converted into the number of sampled 24-taxon blocks. So a larger `k_param` means more blocks and more quartets.
+
+Guideline:
+
+- Keep `3.0` as default.
+- Tune narrowly (`2.9 ~ 3.1`) only when needed.
+- Lower values speed up runtime but increase under-sampling risk.
+- Higher values improve coverage/stability but add runtime and aggregation overhead.
+
+### 3.2 `quartet_assembler` and `qmc_iter_limit`
+
+`quartet_assembler` chooses the quartet tree assembler backend:
+
+- `qfm`: often slightly better in accuracy in many settings; a good default for very large taxa counts.
+- `qmc`: usually close to `qfm` in accuracy (often no large gap), with different runtime behavior by dataset.
+
+`qmc_iter_limit` applies only when `quartet_assembler="qmc"`. Larger values generally increase runtime.
+
+### 3.3 `aggregate_mode` (Duplicate Quartet Aggregation)
+
+This option controls how repeated quartets are merged across sampled subsets.
+
+Why it matters: repeated quartets can be accumulated. Accumulation may push some quartet weights higher than others, which can introduce weighting-instability risk relative to the original goal of comparable `0~100` quartet weights. This is not a guaranteed accuracy gain or loss; it is mainly a stability/overhead tradeoff.
+
+Modes:
+
+- `full`: global aggregation across all batches.
+- `batch_only`: aggregation only within each batch.
+- `off`: disable global aggregation path.
+
+Recommended by scale:
+
+- `<300 ~ 500 taxa`: `full` is usually acceptable.
+- `>500 taxa`: prefer `batch_only` or `off` to reduce large aggregation overhead.
+
+As taxa count increases, duplicate quartets are typically less frequent under your sampling strategy, so reducing aggregation often has limited stability impact.
+
+### 3.4 Other Advanced Knobs
+
+- `quartformer_top1_only=true`: faster, but can reduce accuracy.
+- `keep_support_files=true`: keep `.support.csv` and `.support_quartets.txt`.
+- `infer_batch_size`: reduce first when GPU memory is limited.  
+  Based on your observed runs: `1024 taxa + 10Mbp` can run around `infer_batch_size=2` with about `~3GB` VRAM.
 
 ## 4. Typical Usage Scenarios
 
