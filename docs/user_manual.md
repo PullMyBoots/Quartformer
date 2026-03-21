@@ -96,20 +96,32 @@ Place advanced settings under `advanced`. Recommended template:
   }
 }
 ```
-
-Tuning guidance:
-
 - `k_param`:
-- Usually keep 3.0 default.
-- A small tuning range can be tested (for example `2.9 ~ 3.1`); values that are too low may reduce accuracy.
+- What it controls:
+- `k_param` controls how fast the quartet sampling budget grows as the number of taxa increases.
+- In the current implementation, the target budget is:
+- `target_total_quartets = num_species ^ k_param`
+- This target is converted into the number of sampled blocks (24-taxon blocks in the current inference path), so larger `k_param` means more sampled blocks and more inferred quartets.
+- Practical effect:
+- Larger `k_param`: better coverage and usually better stability on difficult datasets, but slower runtime and higher aggregation overhead.
+- Smaller `k_param`: faster runtime, but higher risk of under-sampling and accuracy drop.
+- Recommended usage:
+- Keep `3.0` as the default.
+- Tune only in a narrow range (for example `2.9 ~ 3.1`).
+- Avoid setting it too low on large or difficult datasets.
 - `quartet_assembler`:
-- `qfm`: often strong on small to medium datasets.
-- `qmc`: usually more robust for larger taxon counts (for example >200), and commonly preferred in large runs.
-- `qmc_iter_limit`: controls qmc search depth; larger values are usually slower.
+- `qfm`: can be slightly better in accuracy in many settings, and is a good default when taxa count is very large.
+- `qmc`: accuracy is often close to `qfm` (usually no large gap), while runtime behavior can differ by dataset.
+- `qmc_iter_limit`: controls qmc search depth (used only when `quartet_assembler="qmc"`); larger values are usually slower.
 - `aggregate_mode`:
-- `full`: global aggregation, typically more stable but with higher time/memory cost.
-- `batch_only`: per-batch aggregation only, often a better speed/resource tradeoff.
-- `off`: disables global aggregation path, often faster for very large datasets.
+- Why aggregation matters:
+- Repeated quartets from different sampled subsets can be merged and accumulated.
+- This accumulation can shift some quartet weights upward relative to others, which may introduce instability risk versus the original design goal (keeping quartet weights on a comparable 0~100 scale).
+- This is not a guaranteed "more accurate" or "less accurate" effect; it is mainly a weighting-stability and overhead tradeoff.
+- Practical recommendation by taxa scale:
+- For smaller/medium datasets (roughly `<300` to `<500` taxa), `full` is acceptable.
+- For larger datasets (roughly `>500` taxa), prefer `batch_only` or `off` to reduce large-scale aggregation overhead.
+- As taxa count increases, your sampling strategy typically reduces duplicate quartets, so turning aggregation down/off usually has limited stability impact.
 - `quartformer_top1_only`:
 - `true` can speed up assembly, but may reduce accuracy.
 - `keep_support_files`:
@@ -153,7 +165,7 @@ python infer_tree.py \
 Scenario D: conservative setup for large datasets
 
 - `task_type=heterogeneous`
-- `quartet_assembler=qmc`
+- `quartet_assembler=qfm`
 - `aggregate_mode=batch_only` or `off`
 - reduce `infer_batch_size` step by step until VRAM usage is stable
 
