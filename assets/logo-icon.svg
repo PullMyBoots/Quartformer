@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="QuartetFormer2 logo icon">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0B1F3A"/>
+      <stop offset="100%" stop-color="#1F4A7A"/>
+    </linearGradient>
+    <linearGradient id="leafA" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2ED6A1"/>
+      <stop offset="100%" stop-color="#14A37F"/>
+    </linearGradient>
+    <linearGradient id="leafB" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5EE1FF"/>
+      <stop offset="100%" stop-color="#2A9FD6"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="512" height="512" rx="92" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="194" fill="none" stroke="#B9E5FF" stroke-opacity="0.25" stroke-width="10"/>
+  <ellipse cx="256" cy="174" rx="76" ry="56" fill="url(#leafA)"/>
+  <ellipse cx="337" cy="256" rx="56" ry="76" fill="url(#leafB)"/>
+  <ellipse cx="256" cy="337" rx="76" ry="56" fill="url(#leafA)"/>
+  <ellipse cx="174" cy="256" rx="56" ry="76" fill="url(#leafB)"/>
+  <line x1="256" y1="174" x2="256" y2="256" stroke="#E9F7FF" stroke-width="6" stroke-linecap="round"/>
+  <line x1="337" y1="256" x2="256" y2="256" stroke="#E9F7FF" stroke-width="6" stroke-linecap="round"/>
+  <line x1="256" y1="337" x2="256" y2="256" stroke="#E9F7FF" stroke-width="6" stroke-linecap="round"/>
+  <line x1="174" y1="256" x2="256" y2="256" stroke="#E9F7FF" stroke-width="6" stroke-linecap="round"/>
+  <rect x="248" y="256" width="17" height="87" rx="5" fill="#E9F7FF"/>
+</svg>

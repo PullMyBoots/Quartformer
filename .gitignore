@@ -142,6 +142,8 @@ revbayes_tree.json
 !docs/**/*.png
 !docs/**/*.jpg
 !docs/**/*.jpeg
+!assets/logo.svg
+!assets/logo-icon.svg
 
 
 # 测试结果和临时文件
