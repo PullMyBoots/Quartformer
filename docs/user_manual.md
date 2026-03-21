@@ -54,7 +54,7 @@ Common (`basic`) parameter block:
   "compute_branch_support": false,
   "plot_tree": false,
   "ref_tree": "",
-  "metric": "rf",
+  "metric": "quartet",
   "quartet_sample_size": 40000
 }
 ```
