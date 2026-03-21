@@ -155,6 +155,7 @@ def run_qf(
     metric: str = "rf",
     compute_branch_support: bool = False,
     keep_support_files: bool = False,
+    quartet_sample_size: int | None = 40000,
 ):
     """
     Enhanced standalone run_QF_framework:
@@ -1137,11 +1138,14 @@ def run_qf(
     if ref_tree_path:
         from utils import compute_tree_difference
 
+        eval_max_quartets = quartet_sample_size
+        if eval_max_quartets is not None and eval_max_quartets <= 0:
+            eval_max_quartets = None
         metric_value = compute_tree_difference(
             output_tree_path,
             ref_tree_path,
             mode=metric,
-            max_quartets=40000,
+            max_quartets=eval_max_quartets,
         )
         metric_name = "RF distance" if metric == "rf" else "Quartet concordance"
         print(f"[EVAL] {metric_name}: {metric_value:.6f}")
@@ -1276,6 +1280,15 @@ def main(argv=None) -> int:
     parser.add_argument("--ref-tree", default="", help="Optional reference tree path")
     parser.add_argument("--metric", choices=["rf", "quartet"], default="rf")
     parser.add_argument(
+        "--quartet-sample-size",
+        type=int,
+        default=40000,
+        help=(
+            "Maximum sampled quartets for metric=quartet evaluation. "
+            "Use 0 to disable sampling (compute all quartets)."
+        ),
+    )
+    parser.add_argument(
         "--keep-support-files",
         action="store_true",
         help="Keep support artifacts (.support.csv / .support_quartets.txt).",
@@ -1329,6 +1342,9 @@ def main(argv=None) -> int:
     cfg_val = _basic_config_get("metric")
     if (not _cli_has_flag("--metric")) and cfg_val is not None:
         args.metric = _normalize_choice(cfg_val, "metric", {"rf", "quartet"})
+    cfg_val = _basic_config_get("quartet_sample_size", "quartet-sample-size")
+    if (not _cli_has_flag("--quartet-sample-size")) and cfg_val is not None:
+        args.quartet_sample_size = int(cfg_val)
 
     # Advanced parameters: config > CLI > defaults.
     cfg_val = _advanced_config_get("keep_support_files", "keep-support-files")
@@ -1342,6 +1358,8 @@ def main(argv=None) -> int:
         raise SystemExit("Missing required parameter: phy (provide --phy or set 'phy' in config)")
     if args.infer_batch_size <= 0:
         raise SystemExit("infer_batch_size must be > 0")
+    if args.quartet_sample_size < 0:
+        raise SystemExit("quartet_sample_size must be >= 0")
 
     os.environ["QF_INFER_CONFIG"] = args.config
 
@@ -1355,6 +1373,7 @@ def main(argv=None) -> int:
         metric=args.metric,
         compute_branch_support=args.compute_branch_support,
         keep_support_files=args.keep_support_files,
+        quartet_sample_size=args.quartet_sample_size,
     )
     if ref_tree_path:
         tree_path, metric_value = result

@@ -25,7 +25,7 @@ In this repository, the default path is:
 `/mnt/c/Users/descfly/Desktop/publish_code/infer_config.jsonc`
 2. If you pass `--config <path>`, that file is used instead.
 3. Parameters are then processed in two groups:
-- `basic`: `phy/out/task_type/compute_branch_support/plot_tree/ref_tree/metric`
+- `basic`: `phy/out/task_type/compute_branch_support/plot_tree/ref_tree/metric/quartet_sample_size`
 - `advanced`: `k_param/quartet_assembler/qmc_iter_limit/aggregate_mode/...`
 
 Current precedence:
@@ -54,7 +54,8 @@ Common (`basic`) parameter block:
   "compute_branch_support": false,
   "plot_tree": false,
   "ref_tree": "",
-  "metric": "rf"
+  "metric": "rf",
+  "quartet_sample_size": 40000
 }
 ```
 
@@ -73,6 +74,10 @@ Parameter notes:
 - Use these when a reference tree is available and you want formal topology comparison.
 - `metric="rf"`: normalized RF distance.
 - `metric="quartet"`: quartet concordance (large cases typically use sampling internally).
+- `quartet_sample_size`:
+- Used when `metric="quartet"`.
+- `>0`: sample at most this many quartets.
+- `0`: compute all quartets (can be very slow on large trees).
 
 ## 3. Advanced Parameters
 

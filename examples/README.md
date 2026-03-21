@@ -28,17 +28,47 @@ This directory contains example phylogenetic inference datasets for testing Quar
 ## Quick Start
 
 ```bash
-# Basic usage (24 species)
-python ../run_qf.py --phy 24/MSA.phy --out output_24.nwk
+# Move to examples directory
+cd examples
 
-# With reference tree evaluation (48 species)
-python ../run_qf.py --phy 48/MSA.phy --out output_48.nwk --ref-tree 48/tree.nwk --metric rf
+# Run all examples
+./run_examples.sh
+```
 
-# Large dataset with quartet accuracy (96 species)
-python ../run_qf.py --phy 96/MSA.phy --out output_96.nwk --ref-tree 96/tree.nwk --metric quartet
+You can also run cases manually:
 
-# Real dataset (Wolbachia) with RF evaluation
-python ../run_qf.py --phy Wolbachia/MSA.phy --out output_wolbachia.nwk --ref-tree Wolbachia/ref_tree.newick --metric rf
+```bash
+# 1) Basic inference (24 species)
+python ../infer_tree.py \
+  --phy 24/MSA.phy \
+  --out output/output_24.nwk \
+  --task-type homogeneous
+
+# 2) Inference + RF evaluation (48 species)
+python ../infer_tree.py \
+  --phy 48/MSA.phy \
+  --out output/output_48.nwk \
+  --ref-tree 48/tree.nwk \
+  --metric rf \
+  --task-type homogeneous
+
+# 3) Inference + quartet concordance (96 species)
+python ../infer_tree.py \
+  --phy 96/MSA.phy \
+  --out output/output_96.nwk \
+  --ref-tree 96/tree.nwk \
+  --metric quartet \
+  --task-type homogeneous
+
+# 4) Real dataset (Wolbachia) + support + plot
+python ../infer_tree.py \
+  --phy Wolbachia/MSA.phy \
+  --out output/output_wolbachia.nwk \
+  --ref-tree Wolbachia/ref_tree.newick \
+  --metric rf \
+  --task-type heterogeneous \
+  --compute-branch-support \
+  --plot-tree
 ```
 
 ## Notes
@@ -46,4 +76,7 @@ python ../run_qf.py --phy Wolbachia/MSA.phy --out output_wolbachia.nwk --ref-tre
 - All datasets were simulated using GTR model with 100,000 site alignments
 - Reference trees are provided for accuracy evaluation
 - The `Wolbachia` example is a real dataset and is included for qualitative validation
-- Adjust `--k-param`, `--run-mode`, and `--task-type` for different scenarios
+- Basic parameters can be passed via CLI; advanced parameters are configured in `infer_config.jsonc`
+- Parameter precedence in current implementation:
+  - `basic`: `CLI > config > default`
+  - `advanced`: `config > CLI > default`

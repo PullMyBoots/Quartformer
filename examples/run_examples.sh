@@ -1,32 +1,58 @@
-#!/bin/bash
-# Example usage scripts for QuartFormer
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+INFER_SCRIPT="${ROOT_DIR}/infer_tree.py"
+OUT_DIR="${SCRIPT_DIR}/output"
+
+mkdir -p "${OUT_DIR}"
 
 echo "=========================================="
-echo "QuartFormer Example Scripts"
+echo "QuartFormer Example Runner"
 echo "=========================================="
-echo ""
+echo "Root: ${ROOT_DIR}"
+echo "Examples: ${SCRIPT_DIR}"
+echo "Output: ${OUT_DIR}"
+echo
 
-# Small dataset (24 species) - Quick test
-echo "1. Running small dataset (24 species)..."
-python ../run_qf.py --phy 24/MSA.phy --out output_small.nwk
+echo "1) Small dataset (24 taxa): basic inference"
+python "${INFER_SCRIPT}" \
+  --phy "${SCRIPT_DIR}/24/MSA.phy" \
+  --out "${OUT_DIR}/output_24.nwk" \
+  --task-type homogeneous
 
-# Medium dataset (48 species) - With RF evaluation
-echo ""
-echo "2. Running medium dataset (48 species) with RF distance evaluation..."
-python ../run_qf.py --phy 48/MSA.phy --out output_medium.nwk --ref-tree 48/tree.nwk --metric rf
+echo
+echo "2) Medium dataset (48 taxa): inference + RF evaluation"
+python "${INFER_SCRIPT}" \
+  --phy "${SCRIPT_DIR}/48/MSA.phy" \
+  --out "${OUT_DIR}/output_48.nwk" \
+  --ref-tree "${SCRIPT_DIR}/48/tree.nwk" \
+  --metric rf \
+  --task-type homogeneous
 
-# Large dataset (96 species) - With quartet accuracy
-echo ""
-echo "3. Running large dataset (96 species) with quartet accuracy evaluation..."
-python ../run_qf.py --phy 96/MSA.phy --out output_large.nwk --ref-tree 96/tree.nwk --metric quartet
+echo
+echo "3) Large dataset (96 taxa): inference + quartet concordance"
+python "${INFER_SCRIPT}" \
+  --phy "${SCRIPT_DIR}/96/MSA.phy" \
+  --out "${OUT_DIR}/output_96.nwk" \
+  --ref-tree "${SCRIPT_DIR}/96/tree.nwk" \
+  --metric quartet \
+  --task-type homogeneous
 
-# Real dataset (Wolbachia) - With RF evaluation
-echo ""
-echo "4. Running real dataset (Wolbachia) with RF distance evaluation..."
-python ../run_qf.py --phy Wolbachia/MSA.phy --out output_wolbachia.nwk --ref-tree Wolbachia/ref_tree.newick --metric rf
+echo
+echo "4) Wolbachia: heterogeneous mode + support + plot + RF evaluation"
+python "${INFER_SCRIPT}" \
+  --phy "${SCRIPT_DIR}/Wolbachia/MSA.phy" \
+  --out "${OUT_DIR}/output_wolbachia.nwk" \
+  --ref-tree "${SCRIPT_DIR}/Wolbachia/ref_tree.newick" \
+  --metric rf \
+  --task-type heterogeneous \
+  --compute-branch-support \
+  --plot-tree
 
-echo ""
+echo
 echo "=========================================="
-echo "All examples completed!"
-echo "Output trees: output_*.nwk"
+echo "All examples completed."
+echo "Generated files are in: ${OUT_DIR}"
 echo "=========================================="
